@@ -120,6 +120,14 @@ async function serve(): Promise<Served> {
   }
 }
 
+/**
+ * A test that loads panes loads two to four whole documents in one page: on
+ * a loaded machine (verify runs the heavy sets beside it) that is many times
+ * one page's time, so these get more than the suite's usual 30 s.
+ */
+const PANES_MS = 90_000
+const STREAM_MS = 180_000
+
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 const q = (selector: string) =>
   `document.querySelector(${JSON.stringify(selector)})`
@@ -333,327 +341,345 @@ describe.skipIf(SKIP !== null)('分栏 on Work', () => {
     served?.stop()
   }, 30_000)
 
-  test('a row’s ⋯ opens one to the right; the line goes with the first pane, the address and the row follow the focus', async () => {
-    const tab = await open(browser, served, '/')
-    try {
-      await tab.evaluate(
-        `(() => { const b = ${q('#fx-text')}; b.value = '还没发的一行'; b.dispatchEvent(new Event('input', { bubbles: true })); })()`,
-      )
-      await besideFrom(tab, ROW(REVIEWER), 'right')
-      await tab.waitFor(READY(2), 10_000)
-      expect(
-        await tab.evaluate<string>(`${q('#fx')}.getAttribute('data-split')`),
-      ).toBe('2')
-      expect(await tab.evaluate<string[]>(ADDRESSES)).toEqual([
-        '/?pane=1',
-        `/?${agent(REVIEWER)}&pane=1`,
-      ])
-      // The window's line is the first pane's now.
-      await tab.waitFor(
-        inPane(
-          0,
-          `return this.document.getElementById('fx-text').value === '还没发的一行'`,
-        ),
-      )
-      expect(await tab.evaluate<string>(`${q('#fx-text')}.value`)).toBe('')
-      // The new pane has the focus, its box the keyboard's; the address and the row follow.
-      expect(await tab.evaluate<number>(FOCUSED)).toBe(1)
-      await tab.waitFor(
-        inPane(
-          1,
-          `return this.document.activeElement === this.document.getElementById('fx-text')`,
-        ),
-      )
-      expect(await tab.evaluate<string>('location.search')).toBe(
-        `?${agent(REVIEWER)}`,
-      )
-      expect(
-        await tab.evaluate<string[]>(
-          `[...document.querySelectorAll('#fx-side [data-split-current]')].map(r => r.getAttribute('data-address'))`,
-        ),
-      ).toEqual([REVIEWER])
-      // Two panes side by side, half each, under the window's bar.
-      const [a, b] = await boxes(tab)
-      expect(a?.[2]).toBe(b?.[2] ?? -1)
-      expect((a?.[0] ?? 0) + (a?.[2] ?? 0)).toBe(b?.[0] ?? -1)
-      // A pane's bar: its title, ⌄ and ×; the side list's button floats over the first.
-      expect(
-        await tab.evaluate<boolean[]>(
-          `[0, 1].map(i => { const d = document.querySelectorAll('.fx-pane-frame')[i].contentDocument;
+  test(
+    'a row’s ⋯ opens one to the right; the line goes with the first pane, the address and the row follow the focus',
+    async () => {
+      const tab = await open(browser, served, '/')
+      try {
+        await tab.evaluate(
+          `(() => { const b = ${q('#fx-text')}; b.value = '还没发的一行'; b.dispatchEvent(new Event('input', { bubbles: true })); })()`,
+        )
+        await besideFrom(tab, ROW(REVIEWER), 'right')
+        await tab.waitFor(READY(2), 10_000)
+        expect(
+          await tab.evaluate<string>(`${q('#fx')}.getAttribute('data-split')`),
+        ).toBe('2')
+        expect(await tab.evaluate<string[]>(ADDRESSES)).toEqual([
+          '/?pane=1',
+          `/?${agent(REVIEWER)}&pane=1`,
+        ])
+        // The window's line is the first pane's now.
+        await tab.waitFor(
+          inPane(
+            0,
+            `return this.document.getElementById('fx-text').value === '还没发的一行'`,
+          ),
+        )
+        expect(await tab.evaluate<string>(`${q('#fx-text')}.value`)).toBe('')
+        // The new pane has the focus, its box the keyboard's; the address and the row follow.
+        expect(await tab.evaluate<number>(FOCUSED)).toBe(1)
+        await tab.waitFor(
+          inPane(
+            1,
+            `return this.document.activeElement === this.document.getElementById('fx-text')`,
+          ),
+        )
+        expect(await tab.evaluate<string>('location.search')).toBe(
+          `?${agent(REVIEWER)}`,
+        )
+        expect(
+          await tab.evaluate<string[]>(
+            `[...document.querySelectorAll('#fx-side [data-split-current]')].map(r => r.getAttribute('data-address'))`,
+          ),
+        ).toEqual([REVIEWER])
+        // Two panes side by side, half each, under the window's bar.
+        const [a, b] = await boxes(tab)
+        expect(a?.[2]).toBe(b?.[2] ?? -1)
+        expect((a?.[0] ?? 0) + (a?.[2] ?? 0)).toBe(b?.[0] ?? -1)
+        // A pane's bar: its title, ⌄ and ×; the side list's button floats over the first.
+        expect(
+          await tab.evaluate<boolean[]>(
+            `[0, 1].map(i => { const d = document.querySelectorAll('.fx-pane-frame')[i].contentDocument;
             return !!d.querySelector('#fx-pane-more summary') && d.querySelector('.fx-pane-close').offsetWidth > 0 && getComputedStyle(d.querySelector('.fx-side')).display === 'none'; })`,
-        ),
-      ).toEqual([true, true])
-      expect(await tab.evaluate<unknown>(KEPT('work'))).toEqual({
-        v: 1,
-        cols: [
-          { w: 0.5, rows: [{ h: 1, q: '' }] },
-          { w: 0.5, rows: [{ h: 1, q: agent(REVIEWER) }] },
-        ],
-        focus: 1,
-      })
-    } finally {
-      await tab.close()
-    }
-  }, 30_000)
-
-  test('⌃] / ⌃[ move the focus from inside a pane; ⌃⌘W closes, and at one the window is itself, the line carried back', async () => {
-    const tab = await open(browser, served, '/', {
-      store: layout([[''], [agent(REVIEWER)], [agent(PLANNER)]], 1),
-    })
-    try {
-      await tab.waitFor(READY(3), 10_000)
-      expect(await tab.evaluate<number>(FOCUSED)).toBe(1)
-      await tab.evaluate(
-        inPane(1, `this.document.getElementById('fx-text').focus()`),
-      )
-      await paneKey(tab, 'next')
-      expect(await tab.evaluate<number>(FOCUSED)).toBe(2)
-      await tab.waitFor(
-        inPane(
-          2,
-          `return this.document.hasFocus() && this.document.activeElement === this.document.getElementById('fx-text')`,
-        ),
-      )
-      await paneKey(tab, 'next')
-      expect(await tab.evaluate<number>(FOCUSED)).toBe(0)
-      await paneKey(tab, 'prev')
-      expect(await tab.evaluate<number>(FOCUSED)).toBe(2)
-      expect(await tab.evaluate<string>('location.search')).toBe(
-        `?${agent(PLANNER)}`,
-      )
-      // A click in a pane gives it the focus.
-      const [x, y] = await centre(tab, '.fx-pane:first-child')
-      await mouse(tab, 'mousePressed', x, y)
-      await mouse(tab, 'mouseReleased', x, y)
-      await tab.waitFor(`${FOCUSED} === 0`)
-      // ⌘B from inside a pane is the window's side list.
-      const { mod } = await mods(tab)
-      await tab.evaluate(
-        inPane(0, `this.document.getElementById('fx-text').focus()`),
-      )
-      await key(tab, 'side', mod)
-      await tab.waitFor(`${q('#fx')}.getAttribute('data-side') === 'closed'`)
-      await key(tab, 'side', mod)
-      await tab.waitFor(`${q('#fx')}.getAttribute('data-side') === 'open'`)
-      // Close two of three: planner's pane, then ops's; reviewer's stays, its line with it.
-      await tab.evaluate(
-        inPane(
-          1,
-          `const b = this.document.getElementById('fx-text'); b.value = '带回来的一行'; b.dispatchEvent(new this.Event('input', { bubbles: true }));`,
-        ),
-      )
-      await tab.evaluate(
-        inPane(2, `this.document.getElementById('fx-text').focus()`),
-      )
-      await tab.waitFor(`${FOCUSED} === 2`)
-      await paneKey(tab, 'close')
-      await tab.waitFor(READY(2))
-      expect(await tab.evaluate<number>(FOCUSED)).toBe(1)
-      await tab.evaluate(
-        inPane(0, `this.document.getElementById('fx-text').focus()`),
-      )
-      await tab.waitFor(`${FOCUSED} === 0`)
-      await paneKey(tab, 'close')
-      await tab.waitFor(
-        `document.querySelectorAll('.fx-pane').length === 0 && !${q('#fx')}.hasAttribute('data-split')`,
-      )
-      await tab.waitFor(
-        `location.search === '?${agent(REVIEWER)}' && ${q('#fx-thread')}.getAttribute('data-target') === '${REVIEWER}'`,
-        10_000,
-      )
-      expect(await tab.evaluate<string>(`${q('#fx-text')}.value`)).toBe(
-        '带回来的一行',
-      )
-      expect(await tab.evaluate<unknown>(KEPT('work'))).toBe(null)
-      expect(
-        await tab.evaluate<number>(
-          `document.querySelectorAll('#fx-side [data-split-current]').length`,
-        ),
-      ).toBe(0)
-    } finally {
-      await tab.close()
-    }
-  }, 30_000)
-
-  test('up to four with a lower split and no fifth; dividers drag no smaller than 320 × 200, even out, step by the arrows', async () => {
-    const tab = await open(browser, served, '/', {
-      store: { 'qianmo.front.side': 'closed' },
-    })
-    try {
-      await paneKey(tab, 'right')
-      await tab.waitFor(READY(2), 10_000)
-      await paneKey(tab, 'right')
-      await tab.waitFor(READY(3), 10_000)
-      await paneKey(tab, 'below')
-      await tab.waitFor(READY(4), 10_000)
-      // Three columns, the focused (third) one split; each new one is 开始一项工作.
-      expect(await tab.evaluate<string[]>(ADDRESSES)).toEqual([
-        '/?pane=1',
-        '/?work=new&pane=1',
-        '/?work=new&pane=1',
-        '/?work=new&pane=1',
-      ])
-      expect(await tab.evaluate<number>(FOCUSED)).toBe(3)
-      const four = await boxes(tab)
-      expect(four.map(b => b[0])).toEqual([0, 720, 1080, 1080])
-      expect(four[2]?.[1]).toBe(0)
-      expect(four[3]?.[1]).toBe(four[2]?.[3] ?? -1)
-      expect(
-        await tab.evaluate<number>(
-          `document.querySelectorAll('.fx-split-bar').length`,
-        ),
-      ).toBe(3)
-      // No fifth, and no third row in a column.
-      await paneKey(tab, 'right')
-      await tab.waitFor(
-        `[...document.querySelectorAll('#toasts .toast')].some(t => t.textContent.includes('放不下更多分栏'))`,
-      )
-      await paneKey(tab, 'below')
-      expect(
-        await tab.evaluate<number>(
-          `document.querySelectorAll('.fx-pane').length`,
-        ),
-      ).toBe(4)
-      // The first divider: dragged left 200 px, then as far as it goes.
-      const [bx, by] = await centre(
-        tab,
-        '.fx-split-bar[data-kind="v"][data-index="0"]',
-      )
-      await mouse(tab, 'mousePressed', bx, by)
-      await mouse(tab, 'mouseMoved', bx - 100, by, {
-        button: 'left',
-        buttons: 1,
-      })
-      // The frames let go of the pointer meanwhile.
-      expect(
-        await tab.evaluate<string>(
-          `getComputedStyle(document.querySelector('.fx-pane-frame')).pointerEvents`,
-        ),
-      ).toBe('none')
-      await mouse(tab, 'mouseMoved', bx - 200, by, {
-        button: 'left',
-        buttons: 1,
-      })
-      await mouse(tab, 'mouseReleased', bx - 200, by)
-      expect((await boxes(tab))[1]?.[0]).toBe(520)
-      await mouse(tab, 'mousePressed', bx - 200, by)
-      await mouse(tab, 'mouseMoved', bx - 900, by, {
-        button: 'left',
-        buttons: 1,
-      })
-      await mouse(tab, 'mouseReleased', bx - 900, by)
-      expect((await boxes(tab))[0]?.[2]).toBe(320)
-      expect(
-        await tab.evaluate<string>(
-          `getComputedStyle(document.querySelector('.fx-pane-frame')).pointerEvents`,
-        ),
-      ).toBe('auto')
-      // A double-click evens the columns out.
-      const [ex, ey] = await centre(
-        tab,
-        '.fx-split-bar[data-kind="v"][data-index="0"]',
-      )
-      await mouse(tab, 'mousePressed', ex, ey)
-      await mouse(tab, 'mouseReleased', ex, ey)
-      await mouse(tab, 'mousePressed', ex, ey, { clickCount: 2 })
-      await mouse(tab, 'mouseReleased', ex, ey, { clickCount: 2 })
-      expect((await boxes(tab)).map(b => b[2])).toEqual([480, 480, 480, 480])
-      // The lower split's divider: by the keyboard, 24 px a step, Enter to even out.
-      const rows = async () => (await boxes(tab)).slice(2).map(b => b[3])
-      const [top0 = 0, low0 = 0] = await rows()
-      await tab.evaluate(`${q('.fx-split-bar[data-kind="h"]')}.focus()`)
-      await key(tab, 'down')
-      expect(await rows()).toEqual([top0 + 24, low0 - 24])
-      await key(tab, 'enter')
-      expect(await rows()).toEqual([top0, low0])
-      expect(
-        await tab.evaluate<string>(
-          `${q('.fx-split-bar[data-kind="h"]')}.getAttribute('aria-valuenow')`,
-        ),
-      ).toBe('50')
-      for (const b of await boxes(tab)) {
-        expect(b[2]).toBeGreaterThanOrEqual(320)
-        expect(b[3]).toBeGreaterThanOrEqual(200)
+          ),
+        ).toEqual([true, true])
+        expect(await tab.evaluate<unknown>(KEPT('work'))).toEqual({
+          v: 1,
+          cols: [
+            { w: 0.5, rows: [{ h: 1, q: '' }] },
+            { w: 0.5, rows: [{ h: 1, q: agent(REVIEWER) }] },
+          ],
+          focus: 1,
+        })
+      } finally {
+        await tab.close()
       }
-      // Narrower than three columns of 320: the focused pane alone, the others kept.
-      await tab.send('Emulation.setDeviceMetricsOverride', {
-        width: 900,
-        height: 900,
-        deviceScaleFactor: 1,
-        mobile: false,
-      })
-      await tab.waitFor(
-        `document.querySelectorAll('.fx-pane:not([hidden])').length === 1`,
-      )
-      expect(await boxes(tab)).toEqual([[0, 0, 900, 900]])
-      expect(
-        await tab.evaluate<number>(
-          `document.querySelectorAll('.fx-pane-frame').length`,
-        ),
-      ).toBe(4)
-      await tab.send('Emulation.setDeviceMetricsOverride', {
-        width: 1440,
-        height: 900,
-        deviceScaleFactor: 1,
-        mobile: false,
-      })
-      await tab.waitFor(
-        `document.querySelectorAll('.fx-pane:not([hidden])').length === 4`,
-      )
-    } finally {
-      await tab.close()
-    }
-  }, 60_000)
+    },
+    PANES_MS,
+  )
 
-  test('a row picked opens in the focused pane without loading it again; one open already takes the focus', async () => {
-    const tab = await open(browser, served, '/', {
-      store: layout([[''], [agent(REVIEWER)]], 0),
-    })
-    try {
-      await tab.waitFor(READY(2), 10_000)
-      await tab.evaluate(inPane(0, `this.__same = true`))
-      const entries = await tab.evaluate<number>('history.length')
-      await tab.evaluate(`${q(`${ROW(PLANNER)} .fx-agent`)}.click()`)
-      await tab.waitFor(
-        inPane(
-          0,
-          `return this.document.getElementById('fx-thread').getAttribute('data-target') === '${PLANNER}'`,
-        ),
-        10_000,
-      )
-      expect(
-        await tab.evaluate<boolean>(inPane(0, 'return this.__same === true')),
-      ).toBe(true)
-      expect(await tab.evaluate<string[]>(ADDRESSES)).toEqual([
-        `/?${agent(PLANNER)}&pane=1`,
-        `/?${agent(REVIEWER)}&pane=1`,
-      ])
-      expect(await tab.evaluate<string>('location.search')).toBe(
-        `?${agent(PLANNER)}`,
-      )
-      // The window did not move: one entry, no Back between panes.
-      expect(await tab.evaluate<number>('history.length')).toBe(entries)
-      await tab.evaluate(`${q(`${ROW(REVIEWER)} .fx-agent`)}.click()`)
-      await tab.waitFor(`${FOCUSED} === 1`)
-      expect(
-        await tab.evaluate<number>(
-          `document.querySelectorAll('.fx-pane').length`,
-        ),
-      ).toBe(2)
-      expect(
-        await tab.evaluate<string[]>(
-          `[...document.querySelectorAll('#fx-side [data-split-current]')].map(r => r.getAttribute('data-address'))`,
-        ),
-      ).toEqual([REVIEWER])
-    } finally {
-      await tab.close()
-    }
-  }, 30_000)
+  test(
+    '⌃] / ⌃[ move the focus from inside a pane; ⌃⌘W closes, and at one the window is itself, the line carried back',
+    async () => {
+      const tab = await open(browser, served, '/', {
+        store: layout([[''], [agent(REVIEWER)], [agent(PLANNER)]], 1),
+      })
+      try {
+        await tab.waitFor(READY(3), 10_000)
+        expect(await tab.evaluate<number>(FOCUSED)).toBe(1)
+        await tab.evaluate(
+          inPane(1, `this.document.getElementById('fx-text').focus()`),
+        )
+        await paneKey(tab, 'next')
+        expect(await tab.evaluate<number>(FOCUSED)).toBe(2)
+        await tab.waitFor(
+          inPane(
+            2,
+            `return this.document.hasFocus() && this.document.activeElement === this.document.getElementById('fx-text')`,
+          ),
+        )
+        await paneKey(tab, 'next')
+        expect(await tab.evaluate<number>(FOCUSED)).toBe(0)
+        await paneKey(tab, 'prev')
+        expect(await tab.evaluate<number>(FOCUSED)).toBe(2)
+        expect(await tab.evaluate<string>('location.search')).toBe(
+          `?${agent(PLANNER)}`,
+        )
+        // A click in a pane gives it the focus.
+        const [x, y] = await centre(tab, '.fx-pane:first-child')
+        await mouse(tab, 'mousePressed', x, y)
+        await mouse(tab, 'mouseReleased', x, y)
+        await tab.waitFor(`${FOCUSED} === 0`)
+        // ⌘B from inside a pane is the window's side list.
+        const { mod } = await mods(tab)
+        await tab.evaluate(
+          inPane(0, `this.document.getElementById('fx-text').focus()`),
+        )
+        await key(tab, 'side', mod)
+        await tab.waitFor(`${q('#fx')}.getAttribute('data-side') === 'closed'`)
+        await key(tab, 'side', mod)
+        await tab.waitFor(`${q('#fx')}.getAttribute('data-side') === 'open'`)
+        // Close two of three: planner's pane, then ops's; reviewer's stays, its line with it.
+        await tab.evaluate(
+          inPane(
+            1,
+            `const b = this.document.getElementById('fx-text'); b.value = '带回来的一行'; b.dispatchEvent(new this.Event('input', { bubbles: true }));`,
+          ),
+        )
+        await tab.evaluate(
+          inPane(2, `this.document.getElementById('fx-text').focus()`),
+        )
+        await tab.waitFor(`${FOCUSED} === 2`)
+        await paneKey(tab, 'close')
+        await tab.waitFor(READY(2))
+        expect(await tab.evaluate<number>(FOCUSED)).toBe(1)
+        await tab.evaluate(
+          inPane(0, `this.document.getElementById('fx-text').focus()`),
+        )
+        await tab.waitFor(`${FOCUSED} === 0`)
+        await paneKey(tab, 'close')
+        await tab.waitFor(
+          `document.querySelectorAll('.fx-pane').length === 0 && !${q('#fx')}.hasAttribute('data-split')`,
+        )
+        await tab.waitFor(
+          `location.search === '?${agent(REVIEWER)}' && ${q('#fx-thread')}.getAttribute('data-target') === '${REVIEWER}'`,
+          10_000,
+        )
+        expect(await tab.evaluate<string>(`${q('#fx-text')}.value`)).toBe(
+          '带回来的一行',
+        )
+        expect(await tab.evaluate<unknown>(KEPT('work'))).toBe(null)
+        expect(
+          await tab.evaluate<number>(
+            `document.querySelectorAll('#fx-side [data-split-current]').length`,
+          ),
+        ).toBe(0)
+      } finally {
+        await tab.close()
+      }
+    },
+    PANES_MS,
+  )
 
-  test('a row dragged onto the content: the drop is drawn where it goes; a right-click opens the row’s menu with both', async () => {
-    const tab = await open(browser, served, '/')
-    try {
-      const drag = (to: string, x: string, y: string) => `(() => {
+  test(
+    'up to four with a lower split and no fifth; dividers drag no smaller than 320 × 200, even out, step by the arrows',
+    async () => {
+      const tab = await open(browser, served, '/', {
+        store: { 'qianmo.front.side': 'closed' },
+      })
+      try {
+        await paneKey(tab, 'right')
+        await tab.waitFor(READY(2), 10_000)
+        await paneKey(tab, 'right')
+        await tab.waitFor(READY(3), 10_000)
+        await paneKey(tab, 'below')
+        await tab.waitFor(READY(4), 10_000)
+        // Three columns, the focused (third) one split; each new one is 开始一项工作.
+        expect(await tab.evaluate<string[]>(ADDRESSES)).toEqual([
+          '/?pane=1',
+          '/?work=new&pane=1',
+          '/?work=new&pane=1',
+          '/?work=new&pane=1',
+        ])
+        expect(await tab.evaluate<number>(FOCUSED)).toBe(3)
+        const four = await boxes(tab)
+        expect(four.map(b => b[0])).toEqual([0, 720, 1080, 1080])
+        expect(four[2]?.[1]).toBe(0)
+        expect(four[3]?.[1]).toBe(four[2]?.[3] ?? -1)
+        expect(
+          await tab.evaluate<number>(
+            `document.querySelectorAll('.fx-split-bar').length`,
+          ),
+        ).toBe(3)
+        // No fifth, and no third row in a column.
+        await paneKey(tab, 'right')
+        await tab.waitFor(
+          `[...document.querySelectorAll('#toasts .toast')].some(t => t.textContent.includes('放不下更多分栏'))`,
+        )
+        await paneKey(tab, 'below')
+        expect(
+          await tab.evaluate<number>(
+            `document.querySelectorAll('.fx-pane').length`,
+          ),
+        ).toBe(4)
+        // The first divider: dragged left 200 px, then as far as it goes.
+        const [bx, by] = await centre(
+          tab,
+          '.fx-split-bar[data-kind="v"][data-index="0"]',
+        )
+        await mouse(tab, 'mousePressed', bx, by)
+        await mouse(tab, 'mouseMoved', bx - 100, by, {
+          button: 'left',
+          buttons: 1,
+        })
+        // The frames let go of the pointer meanwhile.
+        expect(
+          await tab.evaluate<string>(
+            `getComputedStyle(document.querySelector('.fx-pane-frame')).pointerEvents`,
+          ),
+        ).toBe('none')
+        await mouse(tab, 'mouseMoved', bx - 200, by, {
+          button: 'left',
+          buttons: 1,
+        })
+        await mouse(tab, 'mouseReleased', bx - 200, by)
+        expect((await boxes(tab))[1]?.[0]).toBe(520)
+        await mouse(tab, 'mousePressed', bx - 200, by)
+        await mouse(tab, 'mouseMoved', bx - 900, by, {
+          button: 'left',
+          buttons: 1,
+        })
+        await mouse(tab, 'mouseReleased', bx - 900, by)
+        expect((await boxes(tab))[0]?.[2]).toBe(320)
+        expect(
+          await tab.evaluate<string>(
+            `getComputedStyle(document.querySelector('.fx-pane-frame')).pointerEvents`,
+          ),
+        ).toBe('auto')
+        // A double-click evens the columns out.
+        const [ex, ey] = await centre(
+          tab,
+          '.fx-split-bar[data-kind="v"][data-index="0"]',
+        )
+        await mouse(tab, 'mousePressed', ex, ey)
+        await mouse(tab, 'mouseReleased', ex, ey)
+        await mouse(tab, 'mousePressed', ex, ey, { clickCount: 2 })
+        await mouse(tab, 'mouseReleased', ex, ey, { clickCount: 2 })
+        expect((await boxes(tab)).map(b => b[2])).toEqual([480, 480, 480, 480])
+        // The lower split's divider: by the keyboard, 24 px a step, Enter to even out.
+        const rows = async () => (await boxes(tab)).slice(2).map(b => b[3])
+        const [top0 = 0, low0 = 0] = await rows()
+        await tab.evaluate(`${q('.fx-split-bar[data-kind="h"]')}.focus()`)
+        await key(tab, 'down')
+        expect(await rows()).toEqual([top0 + 24, low0 - 24])
+        await key(tab, 'enter')
+        expect(await rows()).toEqual([top0, low0])
+        expect(
+          await tab.evaluate<string>(
+            `${q('.fx-split-bar[data-kind="h"]')}.getAttribute('aria-valuenow')`,
+          ),
+        ).toBe('50')
+        for (const b of await boxes(tab)) {
+          expect(b[2]).toBeGreaterThanOrEqual(320)
+          expect(b[3]).toBeGreaterThanOrEqual(200)
+        }
+        // Narrower than three columns of 320: the focused pane alone, the others kept.
+        await tab.send('Emulation.setDeviceMetricsOverride', {
+          width: 900,
+          height: 900,
+          deviceScaleFactor: 1,
+          mobile: false,
+        })
+        await tab.waitFor(
+          `document.querySelectorAll('.fx-pane:not([hidden])').length === 1`,
+        )
+        expect(await boxes(tab)).toEqual([[0, 0, 900, 900]])
+        expect(
+          await tab.evaluate<number>(
+            `document.querySelectorAll('.fx-pane-frame').length`,
+          ),
+        ).toBe(4)
+        await tab.send('Emulation.setDeviceMetricsOverride', {
+          width: 1440,
+          height: 900,
+          deviceScaleFactor: 1,
+          mobile: false,
+        })
+        await tab.waitFor(
+          `document.querySelectorAll('.fx-pane:not([hidden])').length === 4`,
+        )
+      } finally {
+        await tab.close()
+      }
+    },
+    PANES_MS,
+  )
+
+  test(
+    'a row picked opens in the focused pane without loading it again; one open already takes the focus',
+    async () => {
+      const tab = await open(browser, served, '/', {
+        store: layout([[''], [agent(REVIEWER)]], 0),
+      })
+      try {
+        await tab.waitFor(READY(2), 10_000)
+        await tab.evaluate(inPane(0, `this.__same = true`))
+        const entries = await tab.evaluate<number>('history.length')
+        await tab.evaluate(`${q(`${ROW(PLANNER)} .fx-agent`)}.click()`)
+        await tab.waitFor(
+          inPane(
+            0,
+            `return this.document.getElementById('fx-thread').getAttribute('data-target') === '${PLANNER}'`,
+          ),
+          10_000,
+        )
+        expect(
+          await tab.evaluate<boolean>(inPane(0, 'return this.__same === true')),
+        ).toBe(true)
+        expect(await tab.evaluate<string[]>(ADDRESSES)).toEqual([
+          `/?${agent(PLANNER)}&pane=1`,
+          `/?${agent(REVIEWER)}&pane=1`,
+        ])
+        expect(await tab.evaluate<string>('location.search')).toBe(
+          `?${agent(PLANNER)}`,
+        )
+        // The window did not move: one entry, no Back between panes.
+        expect(await tab.evaluate<number>('history.length')).toBe(entries)
+        await tab.evaluate(`${q(`${ROW(REVIEWER)} .fx-agent`)}.click()`)
+        await tab.waitFor(`${FOCUSED} === 1`)
+        expect(
+          await tab.evaluate<number>(
+            `document.querySelectorAll('.fx-pane').length`,
+          ),
+        ).toBe(2)
+        expect(
+          await tab.evaluate<string[]>(
+            `[...document.querySelectorAll('#fx-side [data-split-current]')].map(r => r.getAttribute('data-address'))`,
+          ),
+        ).toEqual([REVIEWER])
+      } finally {
+        await tab.close()
+      }
+    },
+    PANES_MS,
+  )
+
+  test(
+    'a row dragged onto the content: the drop is drawn where it goes; a right-click opens the row’s menu with both',
+    async () => {
+      const tab = await open(browser, served, '/')
+      try {
+        const drag = (to: string, x: string, y: string) => `(() => {
         const row = ${q(`${ROW(CODER)} .fx-agent`)};
         row.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
         const data = new DataTransfer();
@@ -668,280 +694,307 @@ describe.skipIf(SKIP !== null)('分栏 on Work', () => {
         row.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: data }));
         return [row.getAttribute('draggable'), ...shown];
       })()`
-      // Onto the right third of the window's own conversation.
-      const right = await tab.evaluate<unknown[]>(
-        drag('#fx-main', 'r.left + r.width * 0.9', 'r.top + r.height / 2'),
-      )
-      const width = await tab.evaluate<number>(
-        `${q('#fx-main')}.getBoundingClientRect().width`,
-      )
-      expect(right).toEqual(['true', false, 'right', Math.round(width / 2) + 6])
-      await tab.waitFor(READY(2), 10_000)
-      expect((await tab.evaluate<string[]>(ADDRESSES))[1]).toBe(
-        `/?${agent(CODER)}&pane=1`,
-      )
-      expect(await tab.evaluate<boolean>(`${q('.fx-drop')}.hidden`)).toBe(true)
-      // A right-click on planner's row: its own items, then where it opens.
-      const [x, y] = await centre(tab, `${ROW(PLANNER)} .fx-agent`)
-      await tab.send('Input.dispatchMouseEvent', {
-        type: 'mousePressed',
-        x,
-        y,
-        button: 'right',
-        clickCount: 1,
-      })
-      await tab.send('Input.dispatchMouseEvent', {
-        type: 'mouseReleased',
-        x,
-        y,
-        button: 'right',
-        clickCount: 1,
-      })
-      await tab.waitFor(`!${q('#fx-split-ctx')}.hidden`)
-      const menu = await tab.evaluate<[number, string[], number[]]>(`(() => {
+        // Onto the right third of the window's own conversation.
+        const right = await tab.evaluate<unknown[]>(
+          drag('#fx-main', 'r.left + r.width * 0.9', 'r.top + r.height / 2'),
+        )
+        const width = await tab.evaluate<number>(
+          `${q('#fx-main')}.getBoundingClientRect().width`,
+        )
+        expect(right).toEqual([
+          'true',
+          false,
+          'right',
+          Math.round(width / 2) + 6,
+        ])
+        await tab.waitFor(READY(2), 10_000)
+        expect((await tab.evaluate<string[]>(ADDRESSES))[1]).toBe(
+          `/?${agent(CODER)}&pane=1`,
+        )
+        expect(await tab.evaluate<boolean>(`${q('.fx-drop')}.hidden`)).toBe(
+          true,
+        )
+        // A right-click on planner's row: its own items, then where it opens.
+        const [x, y] = await centre(tab, `${ROW(PLANNER)} .fx-agent`)
+        await tab.send('Input.dispatchMouseEvent', {
+          type: 'mousePressed',
+          x,
+          y,
+          button: 'right',
+          clickCount: 1,
+        })
+        await tab.send('Input.dispatchMouseEvent', {
+          type: 'mouseReleased',
+          x,
+          y,
+          button: 'right',
+          clickCount: 1,
+        })
+        await tab.waitFor(`!${q('#fx-split-ctx')}.hidden`)
+        const menu = await tab.evaluate<[number, string[], number[]]>(`(() => {
         const m = ${q('#fx-split-ctx')};
         const r = m.getBoundingClientRect();
         return [m.querySelectorAll('#fx-split-ctx-items .fx-menu-item').length,
           [...m.querySelectorAll('.fx-split-item')].map(b => b.getAttribute('data-split-q')),
           [Math.round(r.left), Math.round(r.top)]];
       })()`)
-      expect(menu[0]).toBeGreaterThan(0)
-      expect(menu[1]).toEqual([agent(PLANNER), agent(PLANNER)])
-      expect(Math.abs((menu[2][0] ?? 0) - x)).toBeLessThanOrEqual(1)
-      expect(Math.abs((menu[2][1] ?? 0) - y)).toBeLessThanOrEqual(1)
-      await key(tab, 'esc')
-      expect(await tab.evaluate<boolean>(`${q('#fx-split-ctx')}.hidden`)).toBe(
-        true,
-      )
-      await tab.send('Input.dispatchMouseEvent', {
-        type: 'mousePressed',
-        x,
-        y,
-        button: 'right',
-        clickCount: 1,
-      })
-      await tab.send('Input.dispatchMouseEvent', {
-        type: 'mouseReleased',
-        x,
-        y,
-        button: 'right',
-        clickCount: 1,
-      })
-      await tab.waitFor(`!${q('#fx-split-ctx')}.hidden`)
-      await tab.evaluate(
-        `${q('#fx-split-ctx .fx-split-item[data-split-to="below"]')}.click()`,
-      )
-      await tab.waitFor(READY(3), 10_000)
-      expect(await tab.evaluate<boolean>(`${q('#fx-split-ctx')}.hidden`)).toBe(
-        true,
-      )
-      const [, , low] = await boxes(tab)
-      const [, upper] = await boxes(tab)
-      expect(low?.[0]).toBe(upper?.[0] ?? -1)
-      expect(low?.[1]).toBe(upper?.[3] ?? -1)
-    } finally {
-      await tab.close()
-    }
-  }, 30_000)
-
-  test('kept across a reload; a layout out of shape is dropped for one pane', async () => {
-    const tab = await open(browser, served, '/', {
-      store: layout([['', agent(PLANNER)], [agent(REVIEWER)]], 2),
-    })
-    try {
-      await tab.waitFor(READY(3), 10_000)
-      expect(await tab.evaluate<number>(FOCUSED)).toBe(2)
-      // An address that names a conversation puts it in the focused pane.
-      await tab.goto(`${served.base}/?${agent(CODER)}`)
-      await tab.waitFor(READY(3), 10_000)
-      expect(await tab.evaluate<string[]>(ADDRESSES)).toEqual([
-        '/?pane=1',
-        `/?${agent(PLANNER)}&pane=1`,
-        `/?${agent(CODER)}&pane=1`,
-      ])
-      // One the layout has takes the focus instead.
-      await tab.goto(`${served.base}/?${agent(PLANNER)}`)
-      await tab.waitFor(READY(3), 10_000)
-      expect(await tab.evaluate<number>(FOCUSED)).toBe(1)
-      for (const bad of [
-        '{',
-        '{"v":2,"cols":[{"w":1,"rows":[{"h":1,"q":""},{"h":1,"q":"work=new"}]}],"focus":0}',
-        '{"v":1,"cols":[{"w":0,"rows":[{"h":1,"q":""}]},{"w":1,"rows":[{"h":1,"q":""}]}],"focus":0}',
-        '{"v":1,"cols":[{"w":1,"rows":[{"h":1,"q":"https://x.example/"},{"h":1,"q":""}]}],"focus":0}',
-        '{"v":1,"cols":[{"w":1,"rows":[{"h":1,"q":"pane=1"},{"h":1,"q":""}]}],"focus":0}',
-        '{"v":1,"cols":[{"w":1,"rows":[{"h":1,"q":""}]}],"focus":0}',
-        JSON.stringify({
-          v: 1,
-          cols: [1, 2, 3, 4, 5].map(() => ({
-            w: 0.2,
-            rows: [{ h: 1, q: '' }],
-          })),
-          focus: 0,
-        }),
-        JSON.stringify({
-          v: 1,
-          cols: [{ w: 1, rows: [1, 2, 3].map(() => ({ h: 0.3, q: '' })) }],
-          focus: 0,
-        }),
-      ]) {
+        expect(menu[0]).toBeGreaterThan(0)
+        expect(menu[1]).toEqual([agent(PLANNER), agent(PLANNER)])
+        expect(Math.abs((menu[2][0] ?? 0) - x)).toBeLessThanOrEqual(1)
+        expect(Math.abs((menu[2][1] ?? 0) - y)).toBeLessThanOrEqual(1)
+        await key(tab, 'esc')
+        expect(
+          await tab.evaluate<boolean>(`${q('#fx-split-ctx')}.hidden`),
+        ).toBe(true)
+        await tab.send('Input.dispatchMouseEvent', {
+          type: 'mousePressed',
+          x,
+          y,
+          button: 'right',
+          clickCount: 1,
+        })
+        await tab.send('Input.dispatchMouseEvent', {
+          type: 'mouseReleased',
+          x,
+          y,
+          button: 'right',
+          clickCount: 1,
+        })
+        await tab.waitFor(`!${q('#fx-split-ctx')}.hidden`)
         await tab.evaluate(
-          `localStorage.setItem('qianmo.split.work', ${JSON.stringify(bad)})`,
+          `${q('#fx-split-ctx .fx-split-item[data-split-to="below"]')}.click()`,
         )
+        await tab.waitFor(READY(3), 10_000)
+        expect(
+          await tab.evaluate<boolean>(`${q('#fx-split-ctx')}.hidden`),
+        ).toBe(true)
+        const [, , low] = await boxes(tab)
+        const [, upper] = await boxes(tab)
+        expect(low?.[0]).toBe(upper?.[0] ?? -1)
+        expect(low?.[1]).toBe(upper?.[3] ?? -1)
+      } finally {
+        await tab.close()
+      }
+    },
+    PANES_MS,
+  )
+
+  test(
+    'kept across a reload; a layout out of shape is dropped for one pane',
+    async () => {
+      const tab = await open(browser, served, '/', {
+        store: layout([['', agent(PLANNER)], [agent(REVIEWER)]], 2),
+      })
+      try {
+        await tab.waitFor(READY(3), 10_000)
+        expect(await tab.evaluate<number>(FOCUSED)).toBe(2)
+        // An address that names a conversation puts it in the focused pane.
+        await tab.goto(`${served.base}/?${agent(CODER)}`)
+        await tab.waitFor(READY(3), 10_000)
+        expect(await tab.evaluate<string[]>(ADDRESSES)).toEqual([
+          '/?pane=1',
+          `/?${agent(PLANNER)}&pane=1`,
+          `/?${agent(CODER)}&pane=1`,
+        ])
+        // One the layout has takes the focus instead.
+        await tab.goto(`${served.base}/?${agent(PLANNER)}`)
+        await tab.waitFor(READY(3), 10_000)
+        expect(await tab.evaluate<number>(FOCUSED)).toBe(1)
+        for (const bad of [
+          '{',
+          '{"v":2,"cols":[{"w":1,"rows":[{"h":1,"q":""},{"h":1,"q":"work=new"}]}],"focus":0}',
+          '{"v":1,"cols":[{"w":0,"rows":[{"h":1,"q":""}]},{"w":1,"rows":[{"h":1,"q":""}]}],"focus":0}',
+          '{"v":1,"cols":[{"w":1,"rows":[{"h":1,"q":"https://x.example/"},{"h":1,"q":""}]}],"focus":0}',
+          '{"v":1,"cols":[{"w":1,"rows":[{"h":1,"q":"pane=1"},{"h":1,"q":""}]}],"focus":0}',
+          '{"v":1,"cols":[{"w":1,"rows":[{"h":1,"q":""}]}],"focus":0}',
+          JSON.stringify({
+            v: 1,
+            cols: [1, 2, 3, 4, 5].map(() => ({
+              w: 0.2,
+              rows: [{ h: 1, q: '' }],
+            })),
+            focus: 0,
+          }),
+          JSON.stringify({
+            v: 1,
+            cols: [{ w: 1, rows: [1, 2, 3].map(() => ({ h: 0.3, q: '' })) }],
+            focus: 0,
+          }),
+        ]) {
+          await tab.evaluate(
+            `localStorage.setItem('qianmo.split.work', ${JSON.stringify(bad)})`,
+          )
+          await tab.goto(`${served.base}/`)
+          await tab.waitFor('window.qianmoSplit !== undefined')
+          expect(
+            `${bad} ${await tab.evaluate<number>(`document.querySelectorAll('.fx-pane').length`)}`,
+          ).toBe(`${bad} 0`)
+          expect(
+            await tab.evaluate<unknown>(
+              `localStorage.getItem('qianmo.split.work')`,
+            ),
+          ).toBe(null)
+          expect(
+            await tab.evaluate<string>(
+              `${q('#fx-thread')}.getAttribute('data-target')`,
+            ),
+          ).toBe(OPS)
+        }
+        // Storage that throws: one pane, and nothing breaks.
+        await tab.send('Page.addScriptToEvaluateOnNewDocument', {
+          source: `Object.defineProperty(window, 'localStorage', { get() { throw new Error('denied'); } });`,
+        })
         await tab.goto(`${served.base}/`)
         await tab.waitFor('window.qianmoSplit !== undefined')
+        await paneKey(tab, 'right')
+        await tab.waitFor(READY(2), 10_000)
+      } finally {
+        await tab.close()
+      }
+    },
+    PANES_MS,
+  )
+
+  test(
+    'a conversation that cannot be opened: one line and 关闭, or the front’s own line with ×',
+    async () => {
+      const tab = await open(browser, served, '/', {
+        store: layout([[''], [BROKEN], ['session=nope']], 0),
+      })
+      try {
+        await tab.waitFor(
+          `${q('.fx-pane:nth-child(2) .fx-pane-fail')} !== null`,
+          10_000,
+        )
         expect(
-          `${bad} ${await tab.evaluate<number>(`document.querySelectorAll('.fx-pane').length`)}`,
-        ).toBe(`${bad} 0`)
-        expect(
-          await tab.evaluate<unknown>(
-            `localStorage.getItem('qianmo.split.work')`,
+          await tab.evaluate<[string, string, boolean]>(`(() => {
+          const cover = ${q('.fx-pane:nth-child(2) .fx-pane-fail')};
+          return [cover.querySelector('p').textContent, cover.querySelector('button').textContent, cover.parentNode.querySelector('iframe').hidden];
+        })()`),
+        ).toEqual([SPLIT_TEXT['zh-CN'].paneFailed, '关闭', true])
+        // Not the hub's: the session the hub does not know is the front's own line, and × closes it.
+        await tab.waitFor(
+          inPane(
+            2,
+            `return !!this.document.querySelector('#fx[data-pane="1"]') && this.document.getElementById('fx-text') !== null`,
           ),
-        ).toBe(null)
+          10_000,
+        )
+        expect(
+          await tab.evaluate<string>(
+            inPane(
+              2,
+              `return this.document.getElementById('fx-thread').textContent`,
+            ),
+          ),
+        ).toContain('不在')
+        await tab.evaluate(
+          `${q('.fx-pane:nth-child(2) .fx-pane-fail button')}.click()`,
+        )
+        await tab.waitFor(`document.querySelectorAll('.fx-pane').length === 2`)
+        await tab.evaluate(
+          inPane(1, `this.document.querySelector('.fx-pane-close').click()`),
+        )
+        await tab.waitFor(`document.querySelectorAll('.fx-pane').length === 0`)
         expect(
           await tab.evaluate<string>(
             `${q('#fx-thread')}.getAttribute('data-target')`,
           ),
         ).toBe(OPS)
+      } finally {
+        await tab.close()
       }
-      // Storage that throws: one pane, and nothing breaks.
-      await tab.send('Page.addScriptToEvaluateOnNewDocument', {
-        source: `Object.defineProperty(window, 'localStorage', { get() { throw new Error('denied'); } });`,
-      })
-      await tab.goto(`${served.base}/`)
-      await tab.waitFor('window.qianmoSplit !== undefined')
-      await paneKey(tab, 'right')
-      await tab.waitFor(READY(2), 10_000)
-    } finally {
-      await tab.close()
-    }
-  }, 60_000)
+    },
+    PANES_MS,
+  )
 
-  test('a conversation that cannot be opened: one line and 关闭, or the front’s own line with ×', async () => {
-    const tab = await open(browser, served, '/', {
-      store: layout([[''], [BROKEN], ['session=nope']], 0),
-    })
-    try {
-      await tab.waitFor(
-        `${q('.fx-pane:nth-child(2) .fx-pane-fail')} !== null`,
-        10_000,
-      )
-      expect(
-        await tab.evaluate<[string, string, boolean]>(`(() => {
-          const cover = ${q('.fx-pane:nth-child(2) .fx-pane-fail')};
-          return [cover.querySelector('p').textContent, cover.querySelector('button').textContent, cover.parentNode.querySelector('iframe').hidden];
-        })()`),
-      ).toEqual([SPLIT_TEXT['zh-CN'].paneFailed, '关闭', true])
-      // Not the hub's: the session the hub does not know is the front's own line, and × closes it.
-      await tab.waitFor(
-        inPane(
-          2,
-          `return !!this.document.querySelector('#fx[data-pane="1"]') && this.document.getElementById('fx-text') !== null`,
-        ),
-        10_000,
-      )
-      expect(
-        await tab.evaluate<string>(
+  test(
+    '/app, the desktop app’s face: the same panes on the same kept layout',
+    async () => {
+      const tab = await open(browser, served, '/app')
+      try {
+        await paneKey(tab, 'right')
+        await tab.waitFor(READY(2), 10_000)
+        expect(await tab.evaluate<string[]>(ADDRESSES)).toEqual([
+          '/app?pane=1',
+          '/app?work=new&pane=1',
+        ])
+        expect(await tab.evaluate<string>('location.search')).toBe('?work=new')
+        // A conversation from the list opens in the focused pane.
+        const id = await tab.evaluate<string>(
+          `${q('#fx-recents [data-action="fx-open"]')}.getAttribute('data-session')`,
+        )
+        await tab.evaluate(
+          `${q('#fx-recents [data-action="fx-open"]')}.click()`,
+        )
+        await tab.waitFor(
           inPane(
-            2,
-            `return this.document.getElementById('fx-thread').textContent`,
+            1,
+            `return this.document.getElementById('fx-thread').getAttribute('data-session') === ${JSON.stringify(id)}`,
           ),
-        ),
-      ).toContain('不在')
-      await tab.evaluate(
-        `${q('.fx-pane:nth-child(2) .fx-pane-fail button')}.click()`,
-      )
-      await tab.waitFor(`document.querySelectorAll('.fx-pane').length === 2`)
-      await tab.evaluate(
-        inPane(1, `this.document.querySelector('.fx-pane-close').click()`),
-      )
-      await tab.waitFor(`document.querySelectorAll('.fx-pane').length === 0`)
-      expect(
-        await tab.evaluate<string>(
-          `${q('#fx-thread')}.getAttribute('data-target')`,
-        ),
-      ).toBe(OPS)
-    } finally {
-      await tab.close()
-    }
-  }, 30_000)
+          10_000,
+        )
+        expect(await tab.evaluate<string>('location.search')).toBe(
+          `?session=${id}`,
+        )
+        expect(await tab.evaluate<unknown>(KEPT('work'))).toEqual({
+          v: 1,
+          cols: [
+            { w: 0.5, rows: [{ h: 1, q: '' }] },
+            { w: 0.5, rows: [{ h: 1, q: `session=${id}` }] },
+          ],
+          focus: 1,
+        })
+      } finally {
+        await tab.close()
+      }
+    },
+    PANES_MS,
+  )
 
-  test('/app, the desktop app’s face: the same panes on the same kept layout', async () => {
-    const tab = await open(browser, served, '/app')
-    try {
-      await paneKey(tab, 'right')
-      await tab.waitFor(READY(2), 10_000)
-      expect(await tab.evaluate<string[]>(ADDRESSES)).toEqual([
-        '/app?pane=1',
-        '/app?work=new&pane=1',
-      ])
-      expect(await tab.evaluate<string>('location.search')).toBe('?work=new')
-      // A conversation from the list opens in the focused pane.
-      const id = await tab.evaluate<string>(
-        `${q('#fx-recents [data-action="fx-open"]')}.getAttribute('data-session')`,
-      )
-      await tab.evaluate(`${q('#fx-recents [data-action="fx-open"]')}.click()`)
-      await tab.waitFor(
-        inPane(
-          1,
-          `return this.document.getElementById('fx-thread').getAttribute('data-session') === ${JSON.stringify(id)}`,
-        ),
-        10_000,
-      )
-      expect(await tab.evaluate<string>('location.search')).toBe(
-        `?session=${id}`,
-      )
-      expect(await tab.evaluate<unknown>(KEPT('work'))).toEqual({
-        v: 1,
-        cols: [
-          { w: 0.5, rows: [{ h: 1, q: '' }] },
-          { w: 0.5, rows: [{ h: 1, q: `session=${id}` }] },
-        ],
-        focus: 1,
+  test(
+    '⌄ lists the row’s own items, then 只留这一栏 and 关闭分栏',
+    async () => {
+      const tab = await open(browser, served, '/', {
+        store: layout([[''], [agent(REVIEWER)], [agent(PLANNER)]], 0),
       })
-    } finally {
-      await tab.close()
-    }
-  }, 30_000)
-
-  test('⌄ lists the row’s own items, then 只留这一栏 and 关闭分栏', async () => {
-    const tab = await open(browser, served, '/', {
-      store: layout([[''], [agent(REVIEWER)], [agent(PLANNER)]], 0),
-    })
-    try {
-      await tab.waitFor(READY(3), 10_000)
-      await tab.evaluate(
-        inPane(1, `this.document.getElementById('fx-pane-more').open = true`),
-      )
-      await tab.waitFor(
-        inPane(
-          1,
-          `return this.document.querySelectorAll('#fx-pane-items .fx-menu-item').length > 0`,
-        ),
-      )
-      const items = await tab.evaluate<string[]>(
-        inPane(
-          1,
-          `return [...this.document.querySelectorAll('#fx-pane-more .fx-menu-item')].map(b => b.textContent.trim());`,
-        ),
-      )
-      expect(items.slice(-2)).toEqual(['只留这一栏', '关闭分栏'])
-      expect(items.length).toBeGreaterThan(2)
-      expect(items).not.toContain('在右侧打开')
-      await tab.evaluate(
-        inPane(
-          1,
-          `this.document.querySelector('[data-action="fx-pane-solo"]').click()`,
-        ),
-      )
-      await tab.waitFor(`document.querySelectorAll('.fx-pane').length === 0`)
-      await tab.waitFor(
-        `${q('#fx-thread')}.getAttribute('data-target') === '${REVIEWER}'`,
-        10_000,
-      )
-    } finally {
-      await tab.close()
-    }
-  }, 30_000)
+      try {
+        await tab.waitFor(READY(3), 10_000)
+        await tab.evaluate(
+          inPane(1, `this.document.getElementById('fx-pane-more').open = true`),
+        )
+        await tab.waitFor(
+          inPane(
+            1,
+            `return this.document.querySelectorAll('#fx-pane-items .fx-menu-item').length > 0`,
+          ),
+        )
+        const items = await tab.evaluate<string[]>(
+          inPane(
+            1,
+            `return [...this.document.querySelectorAll('#fx-pane-more .fx-menu-item')].map(b => b.textContent.trim());`,
+          ),
+        )
+        expect(items.slice(-2)).toEqual(['只留这一栏', '关闭分栏'])
+        expect(items.length).toBeGreaterThan(2)
+        expect(items).not.toContain('在右侧打开')
+        await tab.evaluate(
+          inPane(
+            1,
+            `this.document.querySelector('[data-action="fx-pane-solo"]').click()`,
+          ),
+        )
+        await tab.waitFor(`document.querySelectorAll('.fx-pane').length === 0`)
+        await tab.waitFor(
+          `${q('#fx-thread')}.getAttribute('data-target') === '${REVIEWER}'`,
+          10_000,
+        )
+      } finally {
+        await tab.close()
+      }
+    },
+    PANES_MS,
+  )
 })
 
 describe.skipIf(SKIP !== null)('the side list’s peek', () => {
@@ -1222,141 +1275,153 @@ describe.skipIf(SKIP !== null)('分栏 on Code', () => {
   }, 30_000)
 
   for (const inFrames of [false, true]) {
-    test(`two local sessions side by side on the window’s one runner channel (${inFrames ? 'globals in every frame' : 'the top frame only'})`, async () => {
-      const tab = await open(browser, served, '/code', { shell: { inFrames } })
+    test(
+      `two local sessions side by side on the window’s one runner channel (${inFrames ? 'globals in every frame' : 'the top frame only'})`,
+      async () => {
+        const tab = await open(browser, served, '/code', {
+          shell: { inFrames },
+        })
+        try {
+          await tab.waitFor(
+            `window.__calls.filter(c => c[0] === 'qmo_local_list').length === 1`,
+          )
+          const start = (
+            where: string,
+            text: string,
+          ) => `(() => { const b = ${where}.getElementById('code-text'); b.focus(); b.value = ${JSON.stringify(text)};
+          b.dispatchEvent(new Event('input')); b.form.requestSubmit(); })()`
+          await tab.evaluate(start('document', '第一条'))
+          await tab.waitFor(`/[?&]session=cs_/.test(location.search)`)
+          await paneKey(tab, 'right')
+          await tab.waitFor(READY(2), 10_000)
+          await tab.evaluate(
+            start(
+              `document.querySelectorAll('.fx-pane-frame')[1].contentDocument`,
+              '第二条',
+            ),
+          )
+          await tab.waitFor(
+            `${FRAMES}.every(f => /[?&]session=cs_/.test(f.contentWindow.location.search))`,
+            10_000,
+          )
+          const ids = await tab.evaluate<string[]>('window.__fake.sessions()')
+          expect(ids).toHaveLength(2)
+          expect(await tab.evaluate<string>('location.search')).toBe(
+            `?session=${ids[1]}`,
+          )
+          // The runner's answers stream into each pane from the window's one channel.
+          await tab.evaluate(
+            `window.__fake.live(${JSON.stringify(ids[0])}, 't_a', '左边的回答'); window.__fake.live(${JSON.stringify(ids[1])}, 't_b', '右边的回答')`,
+          )
+          await tab.waitFor(
+            inPane(
+              0,
+              `return this.document.getElementById('code-msgs').textContent.includes('左边的回答')`,
+            ),
+          )
+          await tab.waitFor(
+            inPane(
+              1,
+              `return this.document.getElementById('code-msgs').textContent.includes('右边的回答')`,
+            ),
+          )
+          expect(
+            await tab.evaluate<string>(
+              inPane(
+                0,
+                `return this.document.getElementById('code-msgs').textContent`,
+              ),
+            ),
+          ).not.toContain('右边的回答')
+          expect(
+            await tab.evaluate<number>(
+              `window.__calls.filter(c => c[0] === 'qmo_local_watch').length`,
+            ),
+          ).toBe(1)
+          // Every call went to the window's shell, none to a frame's own.
+          if (inFrames) {
+            expect(
+              await tab.evaluate<number>(
+                inPane(1, 'return this.__calls.length'),
+              ),
+            ).toBe(0)
+          }
+          expect(
+            await tab.evaluate<string[]>(
+              `window.__calls.filter(c => !/^qmo_(local_|shell_info|boot_layout)/.test(c[0])).map(c => c[0])`,
+            ),
+          ).toEqual([])
+          // The side list marks the focused pane's session.
+          expect(
+            await tab.evaluate<string[]>(
+              `[...document.querySelectorAll('#fx-side [data-split-current]')].map(r => r.getAttribute('data-session') || r.querySelector('[data-session]')?.getAttribute('data-session'))`,
+            ),
+          ).toEqual([ids[1]])
+          // A row's own ⋯ (改名, 删除) gains the two as it opens, once.
+          const row = `#code-sessions .fx-code-row:has([data-session="${ids[0]}"]) details.fx-more`
+          for (const _ of [1, 2]) {
+            await tab.evaluate(`${q(row)}.open = true`)
+            await tab.waitFor(
+              `${q(row)}.querySelectorAll('.fx-split-item').length > 0`,
+            )
+            await tab.evaluate(`${q(row)}.open = false`)
+          }
+          expect(
+            await tab.evaluate<(string | null)[]>(
+              `[...${q(row)}.querySelectorAll('.fx-menu > *')].map(b => b.getAttribute('data-action') + ' ' + b.getAttribute('data-split-q'))`,
+            ),
+          ).toEqual([
+            'code-rename null',
+            'code-delete null',
+            'null null',
+            `fx-split session=${ids[0]}`,
+            `fx-split session=${ids[0]}`,
+          ])
+          expect(await tab.evaluate<unknown>('window.__badArgs')).toEqual([])
+        } finally {
+          await tab.close()
+        }
+      },
+      PANES_MS,
+    )
+  }
+
+  test(
+    'a session the runner no longer has is one line and 关闭',
+    async () => {
+      const tab = await open(browser, served, '/code', {
+        shell: {},
+        store: {
+          'qianmo.split.code': JSON.stringify({
+            v: 1,
+            cols: [
+              { w: 0.5, rows: [{ h: 1, q: '' }] },
+              { w: 0.5, rows: [{ h: 1, q: 'session=cs_gone' }] },
+            ],
+            focus: 0,
+          }),
+        },
+      })
       try {
         await tab.waitFor(
-          `window.__calls.filter(c => c[0] === 'qmo_local_list').length === 1`,
-        )
-        const start = (
-          where: string,
-          text: string,
-        ) => `(() => { const b = ${where}.getElementById('code-text'); b.focus(); b.value = ${JSON.stringify(text)};
-          b.dispatchEvent(new Event('input')); b.form.requestSubmit(); })()`
-        await tab.evaluate(start('document', '第一条'))
-        await tab.waitFor(`/[?&]session=cs_/.test(location.search)`)
-        await paneKey(tab, 'right')
-        await tab.waitFor(READY(2), 10_000)
-        await tab.evaluate(
-          start(
-            `document.querySelectorAll('.fx-pane-frame')[1].contentDocument`,
-            '第二条',
-          ),
-        )
-        await tab.waitFor(
-          `${FRAMES}.every(f => /[?&]session=cs_/.test(f.contentWindow.location.search))`,
+          `${q('.fx-pane:nth-child(2) .fx-pane-fail')} !== null`,
           10_000,
-        )
-        const ids = await tab.evaluate<string[]>('window.__fake.sessions()')
-        expect(ids).toHaveLength(2)
-        expect(await tab.evaluate<string>('location.search')).toBe(
-          `?session=${ids[1]}`,
-        )
-        // The runner's answers stream into each pane from the window's one channel.
-        await tab.evaluate(
-          `window.__fake.live(${JSON.stringify(ids[0])}, 't_a', '左边的回答'); window.__fake.live(${JSON.stringify(ids[1])}, 't_b', '右边的回答')`,
-        )
-        await tab.waitFor(
-          inPane(
-            0,
-            `return this.document.getElementById('code-msgs').textContent.includes('左边的回答')`,
-          ),
-        )
-        await tab.waitFor(
-          inPane(
-            1,
-            `return this.document.getElementById('code-msgs').textContent.includes('右边的回答')`,
-          ),
         )
         expect(
           await tab.evaluate<string>(
-            inPane(
-              0,
-              `return this.document.getElementById('code-msgs').textContent`,
-            ),
+            `${q('.fx-pane:nth-child(2) .fx-pane-fail p')}.textContent`,
           ),
-        ).not.toContain('右边的回答')
-        expect(
-          await tab.evaluate<number>(
-            `window.__calls.filter(c => c[0] === 'qmo_local_watch').length`,
-          ),
-        ).toBe(1)
-        // Every call went to the window's shell, none to a frame's own.
-        if (inFrames) {
-          expect(
-            await tab.evaluate<number>(inPane(1, 'return this.__calls.length')),
-          ).toBe(0)
-        }
-        expect(
-          await tab.evaluate<string[]>(
-            `window.__calls.filter(c => !/^qmo_(local_|shell_info|boot_layout)/.test(c[0])).map(c => c[0])`,
-          ),
-        ).toEqual([])
-        // The side list marks the focused pane's session.
-        expect(
-          await tab.evaluate<string[]>(
-            `[...document.querySelectorAll('#fx-side [data-split-current]')].map(r => r.getAttribute('data-session') || r.querySelector('[data-session]')?.getAttribute('data-session'))`,
-          ),
-        ).toEqual([ids[1]])
-        // A row's own ⋯ (改名, 删除) gains the two as it opens, once.
-        const row = `#code-sessions .fx-code-row:has([data-session="${ids[0]}"]) details.fx-more`
-        for (const _ of [1, 2]) {
-          await tab.evaluate(`${q(row)}.open = true`)
-          await tab.waitFor(
-            `${q(row)}.querySelectorAll('.fx-split-item').length > 0`,
-          )
-          await tab.evaluate(`${q(row)}.open = false`)
-        }
-        expect(
-          await tab.evaluate<(string | null)[]>(
-            `[...${q(row)}.querySelectorAll('.fx-menu > *')].map(b => b.getAttribute('data-action') + ' ' + b.getAttribute('data-split-q'))`,
-          ),
-        ).toEqual([
-          'code-rename null',
-          'code-delete null',
-          'null null',
-          `fx-split session=${ids[0]}`,
-          `fx-split session=${ids[0]}`,
-        ])
-        expect(await tab.evaluate<unknown>('window.__badArgs')).toEqual([])
+        ).toBe(SPLIT_TEXT['zh-CN'].paneFailed)
+        await tab.evaluate(
+          `${q('.fx-pane:nth-child(2) .fx-pane-fail button')}.click()`,
+        )
+        await tab.waitFor(`document.querySelectorAll('.fx-pane').length === 0`)
       } finally {
         await tab.close()
       }
-    }, 30_000)
-  }
-
-  test('a session the runner no longer has is one line and 关闭', async () => {
-    const tab = await open(browser, served, '/code', {
-      shell: {},
-      store: {
-        'qianmo.split.code': JSON.stringify({
-          v: 1,
-          cols: [
-            { w: 0.5, rows: [{ h: 1, q: '' }] },
-            { w: 0.5, rows: [{ h: 1, q: 'session=cs_gone' }] },
-          ],
-          focus: 0,
-        }),
-      },
-    })
-    try {
-      await tab.waitFor(
-        `${q('.fx-pane:nth-child(2) .fx-pane-fail')} !== null`,
-        10_000,
-      )
-      expect(
-        await tab.evaluate<string>(
-          `${q('.fx-pane:nth-child(2) .fx-pane-fail p')}.textContent`,
-        ),
-      ).toBe(SPLIT_TEXT['zh-CN'].paneFailed)
-      await tab.evaluate(
-        `${q('.fx-pane:nth-child(2) .fx-pane-fail button')}.click()`,
-      )
-      await tab.waitFor(`document.querySelectorAll('.fx-pane').length === 0`)
-    } finally {
-      await tab.close()
-    }
-  }, 30_000)
+    },
+    PANES_MS,
+  )
 })
 
 describe.skipIf(SKIP !== null)('one connection for the window', () => {
@@ -1371,122 +1436,129 @@ describe.skipIf(SKIP !== null)('one connection for the window', () => {
     served?.stop()
   }, 30_000)
 
-  test('four panes streaming, a fifth line and the approvals meanwhile: one stream, and no request waits', async () => {
-    const tab = await open(browser, served, '/', {
-      store: layout(
-        [['', agent(CODER)], [agent(REVIEWER)], [agent(PLANNER)]],
-        0,
-      ),
-    })
-    try {
-      await tab.waitFor(READY(4), 15_000)
-      // Every request from here on: when it went, when it was answered.
-      const went = new Map<string, { url: string; at: number }>()
-      const waits: { url: string; ms: number }[] = []
-      const connections = new Set<string>()
-      browser.on(
-        'Network.requestWillBeSent',
-        params => {
-          const request = params['request'] as { url?: string }
-          went.set(String(params['requestId']), {
-            url: String(request?.url ?? ''),
-            at: Date.now(),
-          })
-        },
-        tab.sessionId,
-      )
-      browser.on(
-        'Network.responseReceived',
-        params => {
-          const sent = went.get(String(params['requestId']))
-          const response = params['response'] as { connectionId?: number }
-          if (response?.connectionId !== undefined)
-            connections.add(String(response.connectionId))
-          if (sent !== undefined)
-            waits.push({ url: sent.url, ms: Date.now() - sent.at })
-        },
-        tab.sessionId,
-      )
-      const before = served.streams()
-      expect(before.open).toBe(1)
-      // A line in each pane: four answers streaming at once.
-      for (const i of [0, 1, 2, 3]) {
+  test(
+    'four panes streaming, a fifth line and the approvals meanwhile: one stream, and no request waits',
+    async () => {
+      const tab = await open(browser, served, '/', {
+        store: layout(
+          [['', agent(CODER)], [agent(REVIEWER)], [agent(PLANNER)]],
+          0,
+        ),
+      })
+      try {
+        await tab.waitFor(READY(4), 15_000)
+        // Every request from here on: when it went, when it was answered.
+        const went = new Map<string, { url: string; at: number }>()
+        const waits: { url: string; ms: number }[] = []
+        const connections = new Set<string>()
+        browser.on(
+          'Network.requestWillBeSent',
+          params => {
+            const request = params['request'] as { url?: string }
+            went.set(String(params['requestId']), {
+              url: String(request?.url ?? ''),
+              at: Date.now(),
+            })
+          },
+          tab.sessionId,
+        )
+        browser.on(
+          'Network.responseReceived',
+          params => {
+            const sent = went.get(String(params['requestId']))
+            const response = params['response'] as { connectionId?: number }
+            if (response?.connectionId !== undefined)
+              connections.add(String(response.connectionId))
+            if (sent !== undefined)
+              waits.push({ url: sent.url, ms: Date.now() - sent.at })
+          },
+          tab.sessionId,
+        )
+        const before = served.streams()
+        expect(before.open).toBe(1)
+        // A line in each pane: four answers streaming at once.
+        for (const i of [0, 1, 2, 3]) {
+          await tab.evaluate(
+            inPane(
+              i,
+              `const b = this.document.getElementById('fx-text'); b.value = '第 ${i + 1} 格的一行';
+          b.dispatchEvent(new this.Event('input', { bubbles: true })); b.form.requestSubmit();`,
+            ),
+          )
+        }
+        // While they stream: one more line, and the approvals the panes read.
+        await pause(2_500)
         await tab.evaluate(
           inPane(
-            i,
-            `const b = this.document.getElementById('fx-text'); b.value = '第 ${i + 1} 格的一行';
-          b.dispatchEvent(new this.Event('input', { bubbles: true })); b.form.requestSubmit();`,
+            0,
+            `const b = this.document.getElementById('fx-text'); b.value = '流式进行中再发一行';
+        b.dispatchEvent(new this.Event('input', { bubbles: true })); b.form.requestSubmit();`,
           ),
         )
-      }
-      // While they stream: one more line, and the approvals the panes read.
-      await pause(2_500)
-      await tab.evaluate(
-        inPane(
-          0,
-          `const b = this.document.getElementById('fx-text'); b.value = '流式进行中再发一行';
-        b.dispatchEvent(new this.Event('input', { bubbles: true })); b.form.requestSubmit();`,
-        ),
-      )
-      // And an approval in reviewer's pane, decided while the answers stream.
-      const ask = `[...this.document.querySelectorAll('#fx-asks .fx-ask')].find(a => [...a.querySelectorAll('button')].some(b => b.textContent.trim() === '批准'))`
-      await tab.waitFor(inPane(2, `return !!${ask}`), 10_000)
-      await tab.evaluate(
-        inPane(
-          2,
-          `const a = ${ask}; this.__ask = a.getAttribute('data-request'); [...a.querySelectorAll('button')].find(b => b.textContent.trim() === '批准').click();`,
-        ),
-      )
-      await tab.waitFor(
-        inPane(
-          2,
-          `const a = this.document.querySelector('.fx-ask[data-request="' + this.__ask + '"]'); return !a || /已批准/.test(a.textContent);`,
-        ),
-        10_000,
-      )
-      for (const i of [0, 1, 2, 3]) {
+        // And an approval in reviewer's pane, decided while the answers stream.
+        const ask = `[...this.document.querySelectorAll('#fx-asks .fx-ask')].find(a => [...a.querySelectorAll('button')].some(b => b.textContent.trim() === '批准'))`
+        await tab.waitFor(inPane(2, `return !!${ask}`), 10_000)
+        await tab.evaluate(
+          inPane(
+            2,
+            `const a = ${ask}; this.__ask = a.getAttribute('data-request'); [...a.querySelectorAll('button')].find(b => b.textContent.trim() === '批准').click();`,
+          ),
+        )
         await tab.waitFor(
           inPane(
-            i,
-            `return this.document.getElementById('fx-thread').textContent.includes('已处理「第 ${i + 1} 格的一行」')`,
+            2,
+            `const a = this.document.querySelector('.fx-ask[data-request="' + this.__ask + '"]'); return !a || /已批准/.test(a.textContent);`,
+          ),
+          10_000,
+        )
+        for (const i of [0, 1, 2, 3]) {
+          await tab.waitFor(
+            inPane(
+              i,
+              `return this.document.getElementById('fx-thread').textContent.includes('已处理「第 ${i + 1} 格的一行」')`,
+            ),
+            20_000,
+          )
+        }
+        await tab.waitFor(
+          inPane(
+            0,
+            `return this.document.getElementById('fx-thread').textContent.includes('已处理「流式进行中再发一行」')`,
           ),
           20_000,
         )
+        const after = served.streams()
+        expect(after).toEqual({ open: 1, asked: before.asked })
+        const streamed = waits.filter(w => w.url.includes('/v0/chat/stream'))
+        expect(streamed).toEqual([])
+        const sends = waits.filter(w =>
+          /\/v0\/chat\/sessions\/[^/]+\/messages/.test(w.url),
+        )
+        expect(sends.length).toBe(5)
+        const approvals = waits.filter(w => w.url.includes('/v0/approvals'))
+        expect(
+          waits.filter(w => /\/v0\/approvals\/.+/.test(w.url)).length,
+        ).toBeGreaterThan(0)
+        expect(approvals.length).toBeGreaterThan(0)
+        const slowest = waits.reduce((max, w) => Math.max(max, w.ms), 0)
+        console.log(
+          `[split connections] ${waits.length} requests answered, slowest ${slowest} ms, ` +
+            `${sends.length} sends, ${approvals.length} approvals requests (reads and a decision), ${connections.size} connections used in turn, ` +
+            `streams open ${after.open}, asked ${after.asked}`,
+        )
+        expect(slowest).toBeLessThan(1_500)
+      } finally {
+        await tab.close()
       }
-      await tab.waitFor(
-        inPane(
-          0,
-          `return this.document.getElementById('fx-thread').textContent.includes('已处理「流式进行中再发一行」')`,
-        ),
-        20_000,
-      )
-      const after = served.streams()
-      expect(after).toEqual({ open: 1, asked: before.asked })
-      const streamed = waits.filter(w => w.url.includes('/v0/chat/stream'))
-      expect(streamed).toEqual([])
-      const sends = waits.filter(w =>
-        /\/v0\/chat\/sessions\/[^/]+\/messages/.test(w.url),
-      )
-      expect(sends.length).toBe(5)
-      const approvals = waits.filter(w => w.url.includes('/v0/approvals'))
-      expect(
-        waits.filter(w => /\/v0\/approvals\/.+/.test(w.url)).length,
-      ).toBeGreaterThan(0)
-      expect(approvals.length).toBeGreaterThan(0)
-      const slowest = waits.reduce((max, w) => Math.max(max, w.ms), 0)
-      console.log(
-        `[split connections] ${waits.length} requests answered, slowest ${slowest} ms, ` +
-          `${sends.length} sends, ${approvals.length} approvals requests (reads and a decision), ${connections.size} connections used in turn, ` +
-          `streams open ${after.open}, asked ${after.asked}`,
-      )
-      expect(slowest).toBeLessThan(1_500)
-    } finally {
-      await tab.close()
-    }
-  }, 90_000)
+    },
+    STREAM_MS,
+  )
 
   test('against it: six streams of a page’s own hold the next request back', async () => {
-    const tab = await browser.tab()
+    // A browser of its own: the connections are per browser, and nothing
+    // another test left open may count among the six.
+    const own = await Browser.launch()
+    const tab = await own.tab()
     try {
       await tab.send('Network.setCookie', {
         name: 'qianmo_session',
@@ -1513,9 +1585,9 @@ describe.skipIf(SKIP !== null)('one connection for the window', () => {
       )
       expect(held[1]).toBe(false)
     } finally {
-      await tab.close()
+      await own.close()
     }
-  }, 30_000)
+  }, 60_000)
 })
 
 describe.skipIf(SKIP !== null)('three languages, contrast, 375 px', () => {
@@ -1531,88 +1603,96 @@ describe.skipIf(SKIP !== null)('three languages, contrast, 375 px', () => {
   }, 30_000)
 
   for (const lang of LANGS) {
-    test(`the panes’ words in ${lang}`, async () => {
-      const t = SPLIT_TEXT[lang]
-      const tab = await open(browser, served, '/', {
-        lang,
-        store: layout([[''], [BROKEN]], 0),
-      })
-      try {
-        await tab.waitFor(READY(2, 1), 10_000)
-        await tab.waitFor(`${q('.fx-pane-fail')} !== null`)
-        expect(
-          await tab.evaluate<string[]>(
-            `[${q('.fx-pane-fail p')}.textContent, ${q('.fx-pane-fail button')}.textContent, ${q('.fx-split-bar')}.getAttribute('aria-label'), ${q('.fx-pane-frame')}.title]`,
-          ),
-        ).toEqual([t.paneFailed, t.close, t.resize, t.pane])
-        expect(
-          await tab.evaluate<string[]>(
-            inPane(
-              0,
-              `return [this.document.querySelector('#fx-pane-more summary').getAttribute('aria-label'), this.document.querySelector('.fx-pane-close').getAttribute('aria-label')]`,
+    test(
+      `the panes’ words in ${lang}`,
+      async () => {
+        const t = SPLIT_TEXT[lang]
+        const tab = await open(browser, served, '/', {
+          lang,
+          store: layout([[''], [BROKEN]], 0),
+        })
+        try {
+          await tab.waitFor(READY(2, 1), 10_000)
+          await tab.waitFor(`${q('.fx-pane-fail')} !== null`)
+          expect(
+            await tab.evaluate<string[]>(
+              `[${q('.fx-pane-fail p')}.textContent, ${q('.fx-pane-fail button')}.textContent, ${q('.fx-split-bar')}.getAttribute('aria-label'), ${q('.fx-pane-frame')}.title]`,
             ),
-          ),
-        ).toEqual([t.paneMenu, t.closePane])
-        expect(
-          await tab.evaluate<string[]>(
-            `[...document.querySelectorAll('#fx-split-ctx .fx-split-item')].map(b => b.textContent)`,
-          ),
-        ).toEqual([t.openRight, t.openBelow])
-      } finally {
-        await tab.close()
-      }
-    }, 30_000)
+          ).toEqual([t.paneFailed, t.close, t.resize, t.pane])
+          expect(
+            await tab.evaluate<string[]>(
+              inPane(
+                0,
+                `return [this.document.querySelector('#fx-pane-more summary').getAttribute('aria-label'), this.document.querySelector('.fx-pane-close').getAttribute('aria-label')]`,
+              ),
+            ),
+          ).toEqual([t.paneMenu, t.closePane])
+          expect(
+            await tab.evaluate<string[]>(
+              `[...document.querySelectorAll('#fx-split-ctx .fx-split-item')].map(b => b.textContent)`,
+            ),
+          ).toEqual([t.openRight, t.openBelow])
+        } finally {
+          await tab.close()
+        }
+      },
+      PANES_MS,
+    )
   }
 
   for (const scheme of ['light', 'dark'] as const) {
-    test(`contrast in ${scheme}: the panes, the focused one and the others, the cover, the peek`, async () => {
-      const tab = await open(browser, served, '/', {
-        scheme,
-        store: {
-          ...layout([[''], [agent(REVIEWER)], [BROKEN]], 0),
-          'qianmo.front.side': 'closed',
-        },
-      })
-      try {
-        await tab.waitFor(`${q('.fx-pane-fail')} !== null`, 10_000)
-        const frames = (await tab.childFrames()).filter(
-          f => f.url.includes('pane=1') && !f.url.includes('broken'),
-        )
-        expect(frames).toHaveLength(2)
-        await tab.waitFor(READY(3, 2), 10_000)
-        for (const frame of frames) {
-          const result = await tab.evaluateInFrame<Probe>(
-            frame.id,
-            probe(`document.querySelector('.fx-top')`),
+    test(
+      `contrast in ${scheme}: the panes, the focused one and the others, the cover, the peek`,
+      async () => {
+        const tab = await open(browser, served, '/', {
+          scheme,
+          store: {
+            ...layout([[''], [agent(REVIEWER)], [BROKEN]], 0),
+            'qianmo.front.side': 'closed',
+          },
+        })
+        try {
+          await tab.waitFor(`${q('.fx-pane-fail')} !== null`, 10_000)
+          const frames = (await tab.childFrames()).filter(
+            f => f.url.includes('pane=1') && !f.url.includes('broken'),
           )
-          expect(result.total).toBeGreaterThan(0)
-          expect(result.short).toEqual([])
+          expect(frames).toHaveLength(2)
+          await tab.waitFor(READY(3, 2), 10_000)
+          for (const frame of frames) {
+            const result = await tab.evaluateInFrame<Probe>(
+              frame.id,
+              probe(`document.querySelector('.fx-top')`),
+            )
+            expect(result.total).toBeGreaterThan(0)
+            expect(result.short).toEqual([])
+          }
+          const cover = await tab.evaluate<Probe>(
+            probe(`document.querySelector('.fx-pane-fail')`),
+          )
+          expect(cover.total).toBe(2)
+          expect(cover.short).toEqual([])
+          await tab.waitFor(SETTLED_OPENER)
+          const [x, y] = await centre(tab, '.fx-top .fx-side-open')
+          await mouse(tab, 'mouseMoved', x, y)
+          await tab.waitFor(
+            `${q('#fx')}.getAttribute('data-peek') === 'hover'`,
+            2_000,
+          )
+          await pause(300)
+          // An agent that is off is dimmed on purpose, open or peeking (view/frontStyle.ts).
+          await tab.evaluate(
+            `document.querySelectorAll('.fx-agent-row.is-off .fx-agent-name, .fx-agent-row.is-off .fx-agent-face').forEach(e => { e.style.opacity = '1'; })`,
+          )
+          const peek = await tab.evaluate<Probe>(
+            probe(`document.getElementById('fx-side')`),
+          )
+          expect(peek.total).toBeGreaterThan(5)
+          expect(peek.short).toEqual([])
+        } finally {
+          await tab.close()
         }
-        const cover = await tab.evaluate<Probe>(
-          probe(`document.querySelector('.fx-pane-fail')`),
-        )
-        expect(cover.total).toBe(2)
-        expect(cover.short).toEqual([])
-        await tab.waitFor(SETTLED_OPENER)
-        const [x, y] = await centre(tab, '.fx-top .fx-side-open')
-        await mouse(tab, 'mouseMoved', x, y)
-        await tab.waitFor(
-          `${q('#fx')}.getAttribute('data-peek') === 'hover'`,
-          2_000,
-        )
-        await pause(300)
-        // An agent that is off is dimmed on purpose, open or peeking (view/frontStyle.ts).
-        await tab.evaluate(
-          `document.querySelectorAll('.fx-agent-row.is-off .fx-agent-name, .fx-agent-row.is-off .fx-agent-face').forEach(e => { e.style.opacity = '1'; })`,
-        )
-        const peek = await tab.evaluate<Probe>(
-          probe(`document.getElementById('fx-side')`),
-        )
-        expect(peek.total).toBeGreaterThan(5)
-        expect(peek.short).toEqual([])
-      } finally {
-        await tab.close()
-      }
-    }, 30_000)
+      },
+      PANES_MS,
+    )
   }
 })
