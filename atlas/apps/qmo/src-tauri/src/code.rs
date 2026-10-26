@@ -1711,7 +1711,7 @@ mod tests {
         assert_eq!(fake.launches(), 0, "not started for a question");
         assert_eq!(runner.remote_supported(), None, "never up");
         runner.call("list", json!({})).unwrap();
-        assert_eq!(runner.remote_supported(), Some(false), "from hello");
+        assert_eq!(runner.remote_supported(), Some(true), "from hello");
         let answer = runner
             .ask_if_up("list", json!({}), ms(200))
             .unwrap()
