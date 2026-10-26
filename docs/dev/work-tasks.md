@@ -417,7 +417,55 @@ omp 的待办工具 `todo` 本来就在常驻工具面里（`RESIDENT_SESSION_TO
 
 ## §8 验收与状态（节点与接口）
 
-（实现完成后回写：用例、本机中枢 + 节点 + 假模型走一遍的记录、门禁、未实测项。）
+状态（2026-10-25）：节点与接口一路实现完，分支 `feat/p37-17-work-node`，未合入、未部署。
+
+### 8.1 用例
+
+| 验收项 | 用例（`bun test --preload ./atlas/tests/preload.ts <文件>`） |
+|---|---|
+| 工作会话的种类与工作流；执行者校验（不在名册 404、不可拨 400、地址不合法 400，都不开会话）；未知键与未知工作流 400 | `atlas/packages/console/test/work.test.ts`「opening a work session」6 条；落盘与重启后仍在：`atlas/packages/node/test/commands/consoleWork.test.ts` |
+| 开工作会话与会话里再点工作流，首条都带工作流；与本地命令互斥 | 同上两文件；端到端里首条 `workflow: 'slides'`、发给节点的那一句带点名行 |
+| 只有能读这条会话的人能取：看不见的与不存在的同一个 404 且不碰节点；跨源 cookie 403；账本停用 503；读记账 `work.output.read` | `work.test.ts`「only someone who can read the session can fetch its files」7 条 |
+| 产出路径越界与链接拒绝（`..`、绝对路径、`\`、别的会话、符号链接、硬链接、链接目录、链接的 outputs） | `atlas/packages/node/test/host/workTools.test.ts`「listing and fetching」；中枢侧 400 先于节点：`work.test.ts`、端到端最后一步 |
+| 单文件 50 MiB（列出带 `tooLarge`、不能取、不能预览、不能交付；恰好 50 MiB 可以） | `workTools.test.ts`「50 MiB」；中枢 413：`work.test.ts` |
+| 三种文档从描述生成，读取库（omp 的 markit）读回的文字与预览一致；字体、图表、公式、日期、冻结首行 | `atlas/packages/node/test/host/workDocuments.test.ts` 12 条 |
+| 预览 HTML 没有脚本、外部资源、事件属性；预览头 `script-src 'none'`、`sandbox`、`frame-ancestors 'self'` | `workDocuments.test.ts`「no preview has a script…」（HTMLRewriter 逐元素扫）；`work.test.ts`；端到端取回的预览 |
+| 工作流技能被 qianmopi 发现、假模型按名读到 | `atlas/packages/node/test/commands/consoleWork.integration.test.ts`：系统提示列出六个技能；`read skill://qmo-slides` 与 `skill://qmo-slides/reference.md` 读回技能正文与参考资料；技能文件随 `qm` 打包且与仓库逐字一致：`atlas/packages/node/test/host/workSkills.test.ts` |
+| 活动面板三块的数据：没有待办或清单清空时 `progress` 为 null；进度跨轮保留；上下文按轮替换；`delivered` 按名取最后一次 | `work.test.ts`「the activity panel」；`consoleWork.test.ts`；节点侧合并与收尾：`atlas/packages/node/test/host/workActivity.test.ts` 12 条；轮次工具事件钩子：`atlas/packages/resident/test/omp-turn.test.ts` |
+| 文件卡：交付一行不算一轮、不结束「还在跑」；200 行上限跨重启；错的节点、智能体、任务号拒绝 | `consoleWork.test.ts` |
+| 分块取文件：每块 160 KiB、每节点 400 ms 一块、中途改动断开响应体 | `consoleWork.test.ts`、`workTools.test.ts` |
+
+### 8.2 本机中枢 + 节点 + 假模型
+
+`consoleWork.integration.test.ts`：真 `qm console`（`--registry`、`--chat-url`、`--control`、`--trust`、`--chat-sign`）、真 `qm resident`（`--controller` 与 `--trust` 为控制台公钥、`--require-signed-tasks`）、qianmopi 子进程与回环假模型，HOME、两个配置根与工作区都在一个临时目录里。一次跑完约 4 秒：
+
+1. `GET /v0/work/workflows` 六项；`POST /v0/work/sessions { agent, workflow: 'slides', text }` 答 200，会话 `work: true`、`workflow: 'slides'`，操作者那一行是原文。
+2. 节点上：六个技能已写到 `<配置根>/qianmo/work-skills/`，系统提示里有它们；模型收到点名行，按名读技能与参考资料，记待办，调 `qianmo_make_document` 出 `季度汇报.pptx`，调 `qianmo_deliver_files` 交付，再答一句。
+3. 转录里文件卡（`noticeSource: 'files'`、`kind: 'presentation'`、`preview: true`）排在回答之前；`/activity` 的进度 3/3、上下文 `skills: ['qmo-slides']`、工具次数、`delivered`。
+4. `/outputs` 经控制链路现场列出；`/preview` 没有 `<script>`、带预览 CSP；`/file` 取回的字节与节点磁盘上的文件、文件卡的 `sha256` 一致，`ZipPackage` 打开有四页，markit 读出每页文字；`name=../sources/…` 答 400。
+
+设 `WORK_E2E_EVIDENCE=<绝对路径>` 时把取回的 pptx、预览、markit 读出的文字与转录、活动、列表、响应头写到那里；2026-10-25 的一份在负责人本机 `~/atlas-evidence/2026-10-25/p37-17n-e2e/`（不进仓库）。
+
+### 8.3 实测后改的三处
+
+- 工作流的触发从 `/skill:<名>` 命令改为原文前面加一行点名（§2.2 写了原因）。
+- 下载的 `content-length`：路由照设，Bun 1.4.3 对流式正文丢掉它（§4.3）。
+- 演示文稿改为 DEFLATE 打包：pptxgenjs 只在 `outputType: 'STREAM'` 时理会 `compression`，两页样例 55 KB → 18 KB。
+
+### 8.4 门禁（Bun 1.4.3，提交 `d444ba5db`）
+
+`bun run precheck` 0、`bun run atlas:check:unused` 0、`bun run atlas:check:cycles` 0（运行期与总计都是 0）、`bun run verify` 0（含 `atlas:sbom -- --check`、`atlas:build:qm`、`atlas:check:qm-smoke`、`atlas:build:client`、`atlas:check:client-smoke`）。第一轮 precheck 的 node-host 红一条 `residentStderr.test.ts`「real startup failure redacts combined truncated PEM…」超时，在相关文件与基点相同的检出上单跑 6 次红 1 次，是存量。
+
+`qm` 体积：`dist/qm-darwin-arm64` 242 180 224 B，同基点其他工作树当天的构建 237 747 904 B，增量约 4.4 MB，主要是三个文档库与 jszip。
+
+### 8.5 未实测
+
+- Linux 节点上的 PDF（Chrome 自带沙箱起不来时退 `--no-sandbox` 那条路）与服务器缺中文字体时 PDF 的样子；本机只测了 macOS 的 Google Chrome。
+- 真 PowerPoint、Word、Excel、WPS、Keynote 打开生成的文件（只用 omp 的 markit 与 zip 读回核对）。
+- 真模型照点名行去读技能的比例；假模型是按脚本读的。
+- 50 MiB 文件经真控制链路的整段下载（用例按块与节流验到 20 字节样例和节点侧 50 MiB 边界）；浏览器 `<a download>` 与 sandbox iframe（界面一路）。
+- 外部底层（Claude Code、Codex、ACP）的轮次：这六个技能不随它们下发（§7），点名行对它们只是一句话。
+- 旧控制台读新 `chat.ndjson`（§3.4 的降级）只按 3247b9b2a 的 `ChatStore.load` 代码核对，没起旧版本跑。
 
 ---
 
