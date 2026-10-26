@@ -19,7 +19,7 @@ use crate::{
     text::{text, Text},
 };
 
-const NEW_CHAT: &str = "new-chat";
+const NEW_WORK: &str = "new-work";
 const QUICK: &str = "quick-entry";
 const SETTINGS: &str = "settings";
 const ABOUT: &str = "about";
@@ -34,7 +34,7 @@ const OPEN_HUB: &str = "open-hub";
 /// What each of the shell's menu items does, from the menu bar or the tray.
 pub fn on_menu(app: &AppHandle, event: MenuEvent) {
     match event.id().as_ref() {
-        NEW_CHAT => shell::new_chat(app),
+        NEW_WORK => shell::new_work(app),
         QUICK => shell::toggle_quick(app),
         // The page's settings card when the main window shows the hub's
         // page, the shell's own window otherwise (menu bar ⌘, and tray alike).
@@ -78,7 +78,7 @@ pub fn app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         .item(&item(app, QUIT, t.quit, Some("CmdOrCtrl+Q"))?)
         .build()?;
     let file = SubmenuBuilder::new(app, t.file)
-        .item(&item(app, NEW_CHAT, t.new_chat, Some("CmdOrCtrl+N"))?)
+        .item(&item(app, NEW_WORK, t.new_work, Some("CmdOrCtrl+N"))?)
         .item(&item(app, QUICK, t.quick_entry, None)?)
         .separator()
         .item(&PredefinedMenuItem::close_window(
@@ -122,7 +122,7 @@ fn tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let t = text(app.state::<Shell>().lang);
     let mut menu = MenuBuilder::new(app)
         .item(&item(app, SHOW, t.show_app, None)?)
-        .item(&item(app, NEW_CHAT, t.new_chat, None)?);
+        .item(&item(app, NEW_WORK, t.new_work, None)?);
     // On macOS a click on the icon is quick entry already.
     if !cfg!(target_os = "macos") {
         menu = menu.item(&item(app, QUICK, t.quick_entry, None)?);
