@@ -9,9 +9,11 @@ import type {
   ConsoleResult,
 } from '../src/deps.js'
 import { FRONT_JS } from '../src/assets/frontClient.js'
+import { defaultAvatar } from '../src/avatar.js'
 import { createConsoleHandler } from '../src/http.js'
 import { documentCspFor, inlineScripts, scriptHash } from '../src/respond.js'
 import { ROUTES } from '../src/routes/index.js'
+import { renderFrontSide } from '../src/view/front.js'
 import {
   ADDRESS,
   CountingChat,
@@ -81,6 +83,7 @@ class FrontChat extends CountingChat {
     running = false,
     title = id,
     background = false,
+    resident = false,
   ): void {
     this.sessionsById.set(id, {
       id,
@@ -94,6 +97,7 @@ class FrontChat extends CountingChat {
       title,
       ...(running ? { running: true } : {}),
       ...(background ? { background: true } : {}),
+      ...(resident ? { resident: true } : {}),
     })
   }
 }
@@ -347,9 +351,11 @@ describe('agents and session history', () => {
     expect(stack).not.toContain('data-session="finished"')
   })
 
-  test('picking an agent opens its latest conversation, never a background task worker', async () => {
+  test("an agent's row is the reader's resident conversation, never the latest or a worker; the rest are its 其他对话", async () => {
     const h = front()
-    h.chat.seed('talk', REVIEWER, 60_000)
+    h.chat.seed('talk', REVIEWER, 60_000, false, 'talk', false, true)
+    // Newer, and not resident: an older conversation from before P37.17.
+    h.chat.seed('older', REVIEWER, 1_000, false, '旧的')
     h.chat.seed('worker', REVIEWER, 0, true, '后台任务：周报（task-1）', true)
     h.chat.seed('only-worker', WRITER, 0, true, '后台任务：x（task-2）', true)
     const side = await (
@@ -360,14 +366,91 @@ describe('agents and session history', () => {
       new RegExp(
         `<div class="fx-agent-row[^"]*" data-address="${address}"[^>]*>`,
       ).exec(agents)?.[0] ?? ''
+    const menu = (address: string) =>
+      new RegExp(
+        `data-action="fx-others" data-address="${address}">[\\s\\S]*?</button>`,
+      ).exec(agents)?.[0] ?? ''
     expect(row(REVIEWER.address)).toContain('data-latest="talk"')
-    // An agent with only a worker session opens a new conversation.
+    // An agent with only a worker session opens on its welcome.
     expect(row(WRITER.address)).not.toContain('data-latest')
+    // Nobody opens a second conversation from a row.
+    expect(agents).not.toContain('fx-agent-new')
     // Their work still shows: busy rows and the strip.
     expect(row(WRITER.address)).toContain(' is-busy')
     expect(row(REVIEWER.address)).toContain(' is-busy')
     const stack = side.slice(side.indexOf('id="fx-stack"'))
     expect(stack).toContain('data-session="worker"')
+    // ⋯ counts the others; an agent with none has no such item.
+    expect(menu(REVIEWER.address)).toContain(
+      '其他对话<span class="fx-menu-count">2</span>',
+    )
+    expect(menu(WRITER.address)).toContain(
+      '<span class="fx-menu-count">1</span>',
+    )
+    expect(menu(MAIN.address)).toBe('')
+    // The dialog's list: everything but the resident one.
+    const others = region(side, 'fx-history', '</section>')
+    for (const id of ['older', 'worker', 'only-worker']) {
+      expect(others).toContain(`data-session="${id}"`)
+    }
+    expect(others).not.toContain('data-session="talk"')
+  })
+
+  test("the row's time and last line are the resident conversation's; a dot says the roster's verdict", async () => {
+    const h = front()
+    h.chat.roster = [MAIN, { ...REVIEWER, dialable: false }]
+    h.chat.seed('mine', MAIN, 2 * 3_600_000, false, 'mine', false, true)
+    h.chat.seed('later', MAIN, 60_000, false, 'later')
+    for (const [id, preview] of [
+      ['mine', '常驻会话的最后一句'],
+      ['later', '旧会话的最后一句'],
+    ] as const) {
+      const session = h.chat.sessionsById.get(id)
+      if (session === undefined) throw new Error('seed missing')
+      h.chat.sessionsById.set(id, { ...session, preview })
+    }
+    const side = await (
+      await h.handle(browse('/fragments/chat/front/side', ADMIN))
+    ).text()
+    const agents = region(side, 'fx-agents', '</section>')
+    const main = agents.slice(0, agents.indexOf(REVIEWER.address))
+    expect(main).toContain('>常驻会话的最后一句<')
+    expect(main).not.toContain('旧会话的最后一句')
+    expect(main).toContain('class="fx-agent-when">2 小时前<')
+    expect(main).toContain(
+      '<span class="fx-presence" data-tone="ok"><span class="sr-only">在线</span></span>',
+    )
+    const off = agents.slice(agents.indexOf(REVIEWER.address))
+    expect(off).toContain('data-tone="bad"><span class="sr-only">未接入</span>')
+  })
+
+  test('an agent the roster no longer lists keeps its row while the reader has a conversation with it', async () => {
+    const h = front()
+    const gone: ChatTarget = {
+      ...MAIN,
+      address: 'qianmo://old-1/gone',
+      node: 'old-1',
+      agent: 'gone',
+    }
+    h.chat.seed('kept', gone, 0, false, 'kept', false, true)
+    h.chat.seed('orphan', {
+      ...gone,
+      address: 'qianmo://old-1/other',
+      agent: 'other',
+    })
+    const side = await (
+      await h.handle(browse('/fragments/chat/front/side', ADMIN))
+    ).text()
+    const agents = region(side, 'fx-agents', '</section>')
+    expect(agents).toMatch(
+      /class="fx-agent-row is-off" data-address="qianmo:\/\/old-1\/gone" data-latest="kept"/,
+    )
+    expect(agents).toContain('old-1 · 不在名册')
+    // Without a conversation of the reader's, no row: its sessions are 其他对话.
+    expect(agents).not.toContain('qianmo://old-1/other')
+    expect(region(side, 'fx-history', '</section>')).toContain(
+      'data-session="orphan"',
+    )
   })
 
   test('rolling history windows include their boundaries; current-agent filtering starts hidden for others', async () => {
@@ -393,6 +476,11 @@ describe('agents and session history', () => {
     }
     expect(history).toContain('data-scope="agent" aria-pressed="true"')
     expect(historyTag(history, 'other')).toContain(' hidden')
+    // The list lives in the 其他对话 dialog, not in the bar.
+    expect(page).toContain(
+      '<dialog class="dialog fx-others" id="fx-others" aria-labelledby="fx-others-title">',
+    )
+    expect(page).not.toContain('fx-hist-menu')
   })
 })
 
@@ -554,8 +642,8 @@ describe('front transcript ledger and ownership', () => {
     const side = await (
       await h.handle(asSession('GET', '/fragments/chat/front/side', a.sid))
     ).text()
-    expect(side).toContain(`data-session="${ids[0]}"`)
-    expect(side).not.toContain(`data-session="${ids[1]}"`)
+    expect(side).toContain(`data-latest="${ids[0]}"`)
+    expect(side).not.toContain(`"${ids[1]}"`)
     const before = actions.entries.length
     for (const prefix of ['/fragments/chat/front/view/', '/?session=']) {
       const hidden = await h.handle(
@@ -786,40 +874,109 @@ describe('the 对话 face at /app and quick entry at /app/quick', () => {
         new RegExp(`href="${current}"[^>]*aria-current="page"`),
       )
       expect(page).toContain('class="fx-side-top" data-tauri-drag-region')
-      expect(page).toContain('data-action="fx-new"')
       expect(page).toContain('id="fx-search"')
       expect(page).toContain('class="fx-top" data-tauri-drag-region')
       expect(page).toContain('id="fx-computer"')
       expect(page).toContain('id="fx-offline"')
       expect(page).toContain('id="keyboard-help"')
+      // P37.17: the same side list on both faces — the agents, then the
+      // conversations that are not with one agent, and 其他对话 behind ⋯.
+      // Nothing opens a second conversation with an agent.
+      const side = region(page, 'fx-side', '</aside>')
+      expect(side.indexOf('id="fx-agents"')).toBeGreaterThan(
+        side.indexOf('id="fx-search"'),
+      )
+      expect(side.indexOf('id="fx-recents"')).toBeGreaterThan(
+        side.indexOf('id="fx-agents"'),
+      )
+      expect(page).toContain('id="fx-others"')
+      expect(page).not.toContain('data-action="fx-new"')
+      expect(page).not.toContain('fx-top-new')
+      expect(page).not.toContain('fx-hist-menu')
     }
-    // `/` keeps its agents and history; `/app` lists conversations instead
-    // and picks the agent in the composer.
-    expect(agents).toContain('id="fx-agents"')
-    expect(agents).toContain('id="fx-history"')
-    expect(agents).not.toContain('id="fx-recents"')
-    expect(chat).not.toContain('id="fx-agents"')
-    expect(chat).toContain('id="fx-agent-menu"')
-    expect(chat).toContain('id="fx-agent-btn"')
+    // Both pick the agent in the composer: `/app` over its new
+    // conversation, either face as 由谁来做 on the new work page (P37.17 B).
+    // On `/` an agent's welcome is that agent's, so it is not shown there.
+    for (const page of [agents, chat]) {
+      expect(page).toContain('id="fx-agent-menu"')
+      expect(page).toContain('id="fx-agent-btn"')
+    }
+    expect(
+      /<div class="fx-pick fx-agent-pick"[^>]*>/.exec(agents)?.[0],
+    ).toContain(' hidden')
+    expect(
+      /<div class="fx-pick fx-agent-pick"[^>]*>/.exec(chat)?.[0],
+    ).not.toContain(' hidden')
     expect(chat).not.toContain('data-action="fx-suggest"')
   })
 
-  test('recents: every visible conversation by day, no worker sessions, a figure only for sub-agents', async () => {
+  test('the list by day under the agents is empty with no work session: nothing drawn for it, every conversation with an agent elsewhere', async () => {
     const h = front()
-    h.chat.seed('now', MAIN, 0, true, '现在')
+    h.chat.seed('now', MAIN, 0, true, '现在', false, true)
     h.chat.seed('yesterday', REVIEWER, DAY, false, '昨天的')
-    h.chat.seed('week', WRITER, 2 * DAY, false, '前天的')
-    h.chat.seed('old', MAIN, 10 * DAY, false, '很早的')
     h.chat.seed('worker', REVIEWER, 0, true, '后台任务：周报（task-1）', true)
-    const side = await (
-      await h.handle(
-        browse(
-          '/fragments/chat/front/side?active=yesterday&layout=chat',
-          ADMIN,
-        ),
+    for (const layout of ['', '&layout=chat']) {
+      const side = await (
+        await h.handle(
+          browse(`/fragments/chat/front/side?active=yesterday${layout}`, ADMIN),
+        )
+      ).text()
+      const recents = region(side, 'fx-recents', '</section>')
+      expect(
+        recents.match(/class="fx-rgroup" data-group="[a-z]+" hidden>/g),
+      ).toHaveLength(4)
+      expect(recents).not.toContain('fx-ritem-row')
+      // No line saying it is empty: nothing at all.
+      expect(recents).not.toContain('fx-none')
+      expect(region(side, 'fx-agents', '</section>')).toContain(
+        'data-latest="now"',
       )
-    ).text()
-    expect(side).not.toContain('id="fx-agents"')
+      expect(region(side, 'fx-history', '</section>')).toContain(
+        'data-session="yesterday"',
+      )
+    }
+  })
+
+  test('the list by day, given work sessions (P37.17 B): its days, no worker, the workflow mark and the state, plain previews', () => {
+    const at = (age: number, id: string, target: ChatTarget, extra = {}) => ({
+      id,
+      target: target.address,
+      node: target.node,
+      agent: target.agent,
+      createdAt: NOW - age,
+      updatedAt: NOW - age,
+      turnCount: 1,
+      preview: '**完** `x`',
+      title: id,
+      ...extra,
+    })
+    const works = [
+      at(0, 'now', MAIN, { running: true as const }),
+      at(DAY, 'yesterday', REVIEWER),
+      at(2 * DAY, 'week', WRITER),
+      at(10 * DAY, 'old', MAIN),
+      at(0, 'worker', REVIEWER, { background: true as const }),
+    ]
+    const side = renderFrontSide({
+      faces: {
+        agent: address => defaultAvatar(address),
+        self: defaultAvatar('me'),
+        selfKey: 'user:me',
+        editable: false,
+      },
+      targets: [MAIN, REVIEWER, WRITER],
+      sessions: [],
+      residents: new Map(),
+      works,
+      sessionsFailure: null,
+      main: MAIN.address,
+      selected: REVIEWER.address,
+      activeId: 'yesterday',
+      admin: true,
+      now: NOW,
+      lang: 'zh-CN',
+      layout: 'chat',
+    })
     const recents = region(side, 'fx-recents', '</section>')
     const groups = recents.split('<div class="fx-rgroup"').slice(1)
     expect(
@@ -835,27 +992,21 @@ describe('the 对话 face at /app and quick entry at /app/quick', () => {
         `<div class="fx-ritem-row[^"]*" data-session="${id}"[\\s\\S]*?</button>`,
       ).exec(recents)?.[0] ?? ''
     expect(row('now')).toContain('data-running="1"')
-    expect(row('now')).toContain('class="fx-ritem-live"')
-    expect(row('now')).not.toContain('fx-ritem-face')
-    expect(row('yesterday')).toContain('fx-ritem-face')
+    expect(row('now')).toContain('data-state="running"')
+    expect(row('old')).toContain('data-state="done"')
+    // Who does it is in the tooltip; the mark is the workflow's.
+    expect(row('yesterday')).toContain('title="yesterday · reviewer"')
+    for (const id of ['now', 'yesterday', 'week', 'old']) {
+      expect(row(id)).toContain('class="fx-ritem-mark"')
+      expect(row(id)).not.toContain('fx-ritem-face')
+    }
     expect(row('yesterday')).toContain('is-current')
     expect(row('yesterday')).toContain('aria-current="true"')
-    // The ⋯ menu opens the conversation on the 智能体 face too.
-    expect(recents).toContain('href="/?session=yesterday"')
-    // With nothing to show, the empty line instead of four empty groups.
-    const empty = await (
-      await front().handle(
-        browse('/fragments/chat/front/side?layout=chat', ADMIN),
-      )
-    ).text()
-    const none = region(empty, 'fx-recents', '</section>')
-    expect(
-      none.match(/class="fx-rgroup" data-group="[a-z]+" hidden>/g),
-    ).toHaveLength(4)
-    expect(none).toContain('<p class="fx-none" data-empty="all">暂无对话</p>')
+    expect(row('yesterday')).toContain('data-preview="完 x"')
+    expect(recents).not.toContain('fx-agent-new')
   })
 
-  test('members see only their own conversations in /app recents', async () => {
+  test('members see only their own conversations with the agents on /app', async () => {
     const h = accountsHarness()
     const a = await person(h.handle, 'member')
     const b = await person(h.handle, 'member')
@@ -868,13 +1019,15 @@ describe('the 对话 face at /app and quick entry at /app/quick', () => {
       )
       ids.push(((await response.json()) as { id: string }).id)
     }
+    expect(ids[0]).not.toBe(ids[1])
     for (const path of ['/app', '/fragments/chat/front/side?layout=chat']) {
       const html = await (await h.handle(asSession('GET', path, a.sid))).text()
-      const recents = region(html, 'fx-recents', '</section>')
-      expect(recents).toContain(`data-session="${ids[0]}"`)
-      expect(recents).not.toContain(`data-session="${ids[1]}"`)
+      const agents = region(html, 'fx-agents', '</section>')
+      expect(agents).toContain(`data-latest="${ids[0]}"`)
+      expect(html).not.toContain(`"${ids[1]}"`)
     }
     // Somebody else's conversation reads as one that is not there.
+    const before = h.chat.transcripts
     const hidden = await h.handle(
       asSession('GET', `/app?session=${ids[1]}`, a.sid),
     )
@@ -885,7 +1038,7 @@ describe('the 对话 face at /app and quick entry at /app/quick', () => {
     expect(region(await hidden.text(), 'fx-thread', '</div>')).toBe(
       region(await missing.text(), 'fx-thread', '</div>'),
     )
-    expect(h.chat.transcripts).toBe(0)
+    expect(h.chat.transcripts).toBe(before)
   })
 
   test('/app?session= reads through the ledger once, and a closed ledger refuses before reading', async () => {
@@ -1026,13 +1179,62 @@ describe('the 对话 face at /app and quick entry at /app/quick', () => {
       expect(quick).not.toContain('快速输入')
     }
   })
+
+  test('an agent’s ⋯, 其他对话 and a read-only conversation speak the reader language (P37.17)', async () => {
+    for (const [lang, words] of [
+      // The last: ⌘N's row in the keyboard help (P37.17 B).
+      ['zh-CN', ['其他对话', '只读', '回到 planner', '开始一项工作']],
+      [
+        'en',
+        ['Other conversations', 'Read only', 'Back to planner', 'New task'],
+      ],
+      ['ja', ['ほかの会話', '閲覧のみ', 'planner に戻る', '新しいタスク']],
+    ] as const) {
+      const h = front()
+      h.chat.seed('mine', MAIN, 0, false, 'mine', false, true)
+      h.chat.seed('older', MAIN, DAY)
+      const withLang = (path: string) => {
+        const plain = browse(path, ADMIN)
+        return new Request(plain.url, {
+          headers: {
+            ...Object.fromEntries(plain.headers),
+            cookie: `qianmo_lang=${lang}`,
+          },
+        })
+      }
+      for (const face of ['/', '/app']) {
+        const page = await (await h.handle(withLang(face))).text()
+        expect(page).toContain(`<html lang="${lang}"`)
+        // The agent's own conversation is on screen, the older one under ⋯.
+        expect(page).toContain('data-session="mine"')
+        expect(page).toContain('data-resident="1"')
+        const menu = region(page, 'fx-agents', '</section>')
+        expect(menu).toContain(
+          `data-action="fx-others" data-address="${ADDRESS}">`,
+        )
+        expect(menu).toContain(`${words[0]}<span class="fx-menu-count">1<`)
+        expect(region(page, 'fx-others', '</dialog>')).toContain(
+          `>${words[0]}<`,
+        )
+        expect(page).toContain(`>${words[3]}<`)
+        const older = await (
+          await h.handle(withLang(`${face}?session=older`))
+        ).text()
+        expect(
+          /<div class="fx-thread" id="fx-thread"[^>]*>/.exec(older)?.[0],
+        ).toContain('data-readonly="1"')
+        expect(older).toContain(`>${words[1]}<`)
+        expect(older).toContain(`${words[2]}</button>`)
+      }
+    }
+  })
 })
 
-test('previews are plain text on every face: agent rows, the running strip, recents and the notification body', async () => {
+test('previews are plain text on every face: agent rows, the running strip and the notification body', async () => {
   const h = front()
   const answer =
     '## 路由\n- 补了 `GET /app`\n\n```ts\nGET /app/quick\n```\n见 [文档](https://example.com) **完**'
-  h.chat.seed('talk', MAIN, 0)
+  h.chat.seed('talk', MAIN, 0, false, 'talk', false, true)
   h.chat.seed('sub', REVIEWER, 1, true, '看下 `bun test` **为啥** 红')
   for (const [id, preview] of [
     ['talk', answer],
@@ -1049,10 +1251,10 @@ test('previews are plain text on every face: agent rows, the running strip, rece
   const stack = region(agents, 'fx-stack', '</details>')
   expect(stack).toContain('>看下 bun test 为啥 红<')
   const app = await (await h.handle(browse('/app', ADMIN))).text()
-  const recents = region(app, 'fx-recents', '</section>')
-  expect(recents).toContain(`data-preview="${plain}"`)
-  expect(recents).toContain('>看下 bun test 为啥 红<')
-  for (const html of [main, stack, recents]) {
+  // The desktop app's notification body is the row's second line.
+  const rows = region(app, 'fx-agents', '</section>')
+  expect(rows).toContain(`<span class="fx-agent-sub">${plain}</span>`)
+  for (const html of [main, stack, rows]) {
     expect(html).not.toContain('```')
     expect(html).not.toContain('**')
     expect(html).not.toContain('](')

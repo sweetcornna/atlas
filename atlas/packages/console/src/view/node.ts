@@ -949,6 +949,11 @@ export const NODE_PAGE_JS = `
     if (!models) return;
     var url = models.getAttribute('data-fragment') || '';
     if (!url) return;
+    // While this first load is on its way the runtime's own refresh (its
+    // tick, or the tab coming into view) must not ask for it a second time:
+    // the poll goes back on once it has loaded.
+    var poll = models.getAttribute('data-poll');
+    models.removeAttribute('data-poll');
     var line = function (text, state) {
       models.removeAttribute('data-poll');
       models.setAttribute('data-state', state);
@@ -960,6 +965,7 @@ export const NODE_PAGE_JS = `
     };
     qc.loadHtml(url).then(function (html) {
       models.innerHTML = html;
+      if (poll) models.setAttribute('data-poll', poll);
       models.setAttribute('data-state', 'loaded');
     }).catch(function (err) {
       if (qc.isExpired()) return;

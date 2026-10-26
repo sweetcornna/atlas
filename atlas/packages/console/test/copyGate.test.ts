@@ -52,6 +52,7 @@ import {
   invite,
   person,
 } from './accountsHarness.js'
+import { WORK_TEXT } from '../src/view/frontWork.js'
 import { publicConsole } from './billingFake.js'
 import { ADMIN, VIEW, browse, pageHarness } from './pageHarness.js'
 
@@ -161,6 +162,8 @@ async function frontDocuments(): Promise<[string, string][]> {
       '/app',
       `/app?session=${id}`,
       '/app/quick',
+      '/?work=new',
+      '/app?work=new',
     ]) {
       const response = await h.handle(request(path))
       expect(response.status).toBe(200)
@@ -419,6 +422,26 @@ describe('every string a page script writes keeps the copy rules (I1)', () => {
       6,
     )
     expect(bannedTerms().some(banned => banned.found('在左边'))).toBe(true)
+  })
+
+  test('the words of 广泛性工作, in every language (P37.17 B)', () => {
+    const found: string[] = []
+    let count = 0
+    const walk = (where: string, value: unknown): void => {
+      if (typeof value === 'string') {
+        count += 1
+        found.push(...violations(where, value))
+        for (const banned of bannedTerms()) {
+          if (banned.found(value)) found.push(`${where}: ${banned.term}`)
+        }
+      } else if (value !== null && typeof value === 'object') {
+        for (const [key, inner] of Object.entries(value))
+          walk(`${where}.${key}`, inner)
+      }
+    }
+    walk('WORK_TEXT', WORK_TEXT)
+    expect(count).toBeGreaterThan(90)
+    expect(found).toEqual([])
   })
 
   test('the scripts each page serves', async () => {

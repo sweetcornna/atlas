@@ -694,13 +694,15 @@ fn local_base() -> &'static str {
     }
 }
 
-/// ⌘N, the tray and `qmo://new`: a new conversation in the main window.
-pub fn new_chat(app: &AppHandle) {
+/// ⌘N, the tray and `qmo://new`: a new task in the main window, the new
+/// work page (P37.17 B, `docs/dev/work-tasks.md` §9.1). A conversation with
+/// an agent is its row in the side list, never a new one.
+pub fn new_work(app: &AppHandle) {
     shell(app).unhide();
     match shell(app).hub() {
         Some(hub) if shell(app).phase() == Phase::Hub => {
             show_app(app);
-            navigate_main(app, hub.app_url());
+            navigate_main(app, hub.new_work_url());
         }
         _ => show_app(app),
     }
@@ -761,13 +763,13 @@ pub fn follow(app: &AppHandle, link: DeepLink) {
     s.unhide();
     if s.phase() == Phase::Hub {
         match link {
-            DeepLink::New => new_chat(app),
+            DeepLink::New => new_work(app),
             DeepLink::Session(id) => open_session(app, &id),
         }
         return;
     }
     let path = match link {
-        DeepLink::New => "/app".to_string(),
+        DeepLink::New => "/app?work=new".to_string(),
         DeepLink::Session(id) => format!("/app?session={id}"),
     };
     s.with(|st| st.pending = Some(path));

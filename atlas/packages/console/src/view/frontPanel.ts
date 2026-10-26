@@ -15,6 +15,10 @@
  * - **云端电脑** (P21): a way to the agents' browsers and computers, where
  *   the hub has them.
  *
+ * In a work session (P37.17 B) the activity's three parts — 进度, 产出,
+ * 上下文 — come first (`frontWork.ts`); they are part of the view, not of
+ * this fragment.
+ *
  * Rendered as the fragment `/fragments/chat/front/panel`; the front's panel
  * script (`assets/frontPanel.ts`) fetches it while the panel is open.
  */
@@ -178,13 +182,18 @@ export function renderFrontPanel(model: FrontPanelModel): string {
   )
 }
 
-/** The panel's frame, empty until the script fetches its body. */
-export function frontPanelFrame(t: FrontText): string {
+/**
+ * The panel's frame, its body empty until the script fetches it. `activity`
+ * is a work session's activity (`frontWork.ts`, P37.17 B), at the head of
+ * the panel and swapped with the view rather than with the body.
+ */
+export function frontPanelFrame(t: FrontText, activity = ''): string {
   return (
     `<aside class="fx-panel" id="fx-panel" aria-labelledby="fx-panel-name" hidden>` +
     `<div class="fx-panel-top"><b class="fx-panel-name" id="fx-panel-name">${escapeHtml(t.sessionPanel)}</b>` +
     `<button type="button" class="fx-icon-btn" data-action="fx-panel" aria-label="${attr(t.closePanel)}" aria-controls="fx-panel">` +
     `${icon('x', { small: true })}</button></div>` +
+    activity +
     `<div class="fx-panel-body" id="fx-panel-body"></div>` +
     `</aside>`
   )

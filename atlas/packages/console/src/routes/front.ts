@@ -10,14 +10,15 @@
  *
  * | Path | What |
  * | --- | --- |
- * | `GET /` | the front's 智能体 face: the main agent's welcome, `?agent=<address>` another agent's, `?session=<id>` an open conversation |
- * | `GET /app` | the front's 对话 face, the desktop app's home: a new conversation with the main agent, `?agent=<address>` with another, `?session=<id>` an open conversation |
+ * | `GET /` | the front's 智能体 face: the main agent's welcome, `?agent=<address>` another agent's, `?session=<id>` an open conversation, `?work=new` 开始一项工作 (P37.17 B) |
+ * | `GET /app` | the front's 对话 face, the desktop app's home: a new conversation with the main agent, `?agent=<address>` with another, `?session=<id>` an open conversation, `?work=new` 开始一项工作 |
  * | `GET /app/quick` | quick entry: one card that opens a conversation and hands it to the main window |
  * | `GET /code` | Code, the main window's second mode: the agents on this computer, inside the desktop app (`view/frontCode.ts`) |
  * | `GET /admin/…` (as a document) | the Work face with nothing open, under the settings card drawn open on the area (`routes/index.ts`) |
  * | `GET /fragments/chat/front/side?agent=&active=[&layout=chat]` | the side panel's agents, sessions and the running strip; `/app`'s conversations by day and its agent picker |
  * | `GET /fragments/chat/front/view?agent=<address>[&layout=chat]` | the head and the welcome for one agent |
- * | `GET /fragments/chat/front/view/<id>[?open=1][&layout=chat]` | the head and one conversation |
+ * | `GET /fragments/chat/front/view?work=new[&agent=<address>][&layout=chat]` | the new work page, `agent` doing it (P37.17 B); reads no transcript |
+ * | `GET /fragments/chat/front/view/<id>[?open=1][&layout=chat]` | the head, one conversation and, for a work session, its activity |
  *
  * The two faces are one front: the same guard, the same reading gate, the
  * same fragments with `layout=chat` choosing `/app`'s face of them. Quick
@@ -31,7 +32,8 @@
  * conversation and marks none as read.
  *
  * Everything else the front does goes through the chat routes it always went
- * through (`routes/chat.ts`): `POST /v0/chat/sessions` to open a session,
+ * through (`routes/chat.ts`): `POST /v0/chat/sessions` for the agent's
+ * resident conversation (opened at the first line, P37.17),
  * `POST /v0/chat/sessions/<id>/messages` to send, `GET /v0/chat/stream` to
  * hear about changes. The guard is the chat guard in full, read-only parts
  * included (`routes/chat.ts`, module note), and a member sees only the
@@ -44,6 +46,11 @@
  */
 
 import { chatScopeOf, type ChatScope } from '../accountsHttp.js'
+import {
+  residentOwnerOf,
+  residentSessions,
+  workSessions,
+} from '../chatResident.js'
 import { langOf } from '../i18n.js'
 import { agentAvatarKey } from '../avatar.js'
 import type {
@@ -132,6 +139,10 @@ function mainAgentOf(
 interface FrontData {
   readonly targets: readonly ChatTarget[] | null
   readonly sessions: readonly ChatSession[]
+  /** The reader's resident conversation with each agent (P37.17). */
+  readonly residents: ReadonlyMap<string, ChatSession>
+  /** The reader's own work sessions (P37.17 B). */
+  readonly works: readonly ChatSession[]
   readonly sessionsFailure: ConsoleFailure | null
   readonly main: string | null
 }
@@ -145,13 +156,17 @@ async function frontData(
     chat.sessions(),
     chatTargets(chat),
   ])
+  // Fetched whole and filtered here, as on the legacy rail: the port has no
+  // notion of an owner.
+  const visible = (valueOf(sessions) ?? []).filter(session =>
+    scope.visible(session.id),
+  )
+  const owner = residentOwnerOf(ctx.access, ctx.accounts)
   return {
     targets,
-    // Fetched whole and filtered here, as on the legacy rail: the port has no
-    // notion of an owner.
-    sessions: (valueOf(sessions) ?? []).filter(session =>
-      scope.visible(session.id),
-    ),
+    sessions: visible,
+    residents: residentSessions(visible, owner),
+    works: workSessions(visible, owner),
     sessionsFailure: failureOf(sessions),
     main: mainAgentOf(targets, preferredMainAgent(ctx.deps)),
   }
@@ -190,6 +205,8 @@ async function sideModel(
     faces: chatFaces(faces),
     targets: data.targets,
     sessions: data.sessions,
+    residents: data.residents,
+    works: data.works,
     sessionsFailure: data.sessionsFailure,
     main: data.main,
     selected,
@@ -206,7 +223,10 @@ interface FrontViewRender {
   readonly model: FrontViewModel
   /** The agent in focus, for the side panel. */
   readonly selected: string | null
-  /** A transcript really loaded: what enables the composer. */
+  /**
+   * A transcript really loaded: what enables the composer, unless it is
+   * read-only here (`model.readOnly`).
+   */
   readonly open: boolean
   /** Nothing open and the agent can be dialled: the first line opens one. */
   readonly startable: boolean
@@ -216,23 +236,35 @@ interface FrontViewRender {
 }
 
 /**
- * The view for `sessionId`, or the welcome of `asked` (or the main agent).
+ * The view for `sessionId`; with none, the new work page when `newWork`
+ * asks for it (P37.17 B, `asked` or the main agent doing it), else the
+ * reader's resident conversation with `asked` (or the main agent) when
+ * `resident` allows it and there is one, else that agent's welcome (P37.17).
  *
  * A transcript is read only through the gate (`noteTranscriptRead`): refused,
  * the view is the reason in place of the conversation, with a 503, and no
- * transcript was read to draw it.
+ * transcript was read to draw it. An agent's resident conversation is read
+ * through it too, the same as one asked for by id.
  */
 async function viewFor(
   ctx: RouteContext,
   chat: ChatPort,
   data: FrontData,
   scope: ChatScope,
-  sessionId: string | null,
+  asking: string | null,
   asked: string | undefined,
   explicitOpen: boolean,
   look: FaceLookup,
   layout: FrontLayout,
+  resident = true,
+  newWork = false,
 ): Promise<FrontViewRender> {
+  const sessionId =
+    asking !== null && asking !== ''
+      ? asking
+      : resident && !newWork
+        ? (data.residents.get(pickedAgent(data, asked) ?? '')?.id ?? null)
+        : null
   const admin = mayAdmin(ctx)
   const registryDown = data.targets === null
   const base = {
@@ -285,6 +317,12 @@ async function viewFor(
     const looked = chatFaces(
       await look(address === '' ? [] : [agentAvatarKey(address)]),
     )
+    // Written in here only when it is the reader's own conversation with
+    // its agent, or one of their work sessions; any other is read here
+    // (P37.17).
+    const own = data.residents.get(address)?.id === sessionId
+    const work = data.works.some(session => session.id === sessionId)
+    const mine = own || work
     return {
       model: {
         ...base,
@@ -296,6 +334,9 @@ async function viewFor(
           null,
         agent: address === '' ? null : address,
         main: address !== '' && address === data.main,
+        resident: transcript.ok && own,
+        work: transcript.ok && work,
+        readOnly: transcript.ok && !mine,
       },
       selected: address === '' ? data.main : address,
       // The composer is enabled by a transcript that actually loaded, not by
@@ -324,6 +365,7 @@ async function viewFor(
       target,
       agent,
       main: agent !== null && agent === data.main,
+      ...(newWork ? { newWork: true } : {}),
     },
     selected: agent,
     open: false,
@@ -374,12 +416,18 @@ async function workFace(
   chat: ChatPort,
   layout: FrontLayout,
   card: SettingsCard | undefined,
-  opened: { readonly session: string | null; readonly agent?: string },
+  opened: {
+    readonly session: string | null
+    readonly agent?: string
+    /** `?work=new`: 开始一项工作 (P37.17 B). */
+    readonly work?: boolean
+  },
 ): Promise<FrontRender> {
   const scope = chatScopeOf(ctx.access, ctx.accounts)
   const look = lookFaces(ctx)
   const data = await frontData(ctx, chat, scope)
-  // A page that opens with a conversation in it is one reading.
+  // A page that opens with a conversation in it is one reading. Under the
+  // settings card nothing is asked for: the welcome, never a transcript.
   const view = await viewFor(
     ctx,
     chat,
@@ -390,11 +438,14 @@ async function workFace(
     true,
     look,
     layout,
+    card?.open !== true,
+    card?.open !== true && opened.work === true,
   )
+  // On the new work page no agent's row is the current one (P37.17 B).
   const side = await sideModel(
     ctx,
     data,
-    view.selected,
+    view.model.newWork === true ? null : view.selected,
     opened.session,
     scope,
     look,
@@ -407,7 +458,8 @@ async function workFace(
       side: frontSideParts(side),
       view: frontViewParts(view.model),
       welcome: view.welcome,
-      composerEnabled: view.open || view.startable,
+      composerEnabled:
+        (view.open && view.model.readOnly !== true) || view.startable,
       admin: side.admin,
       faces: side.faces,
       lang: side.lang,
@@ -426,6 +478,7 @@ async function workFace(
         : {}),
       layout,
       picked: view.selected,
+      ...(view.model.newWork === true ? { newWork: true } : {}),
     },
     view.status ?? 200,
   )
@@ -446,6 +499,7 @@ export async function renderFront(
   return await workFace(ctx, chat, layout, card, {
     session: textParam(ctx.url.searchParams, 'session') ?? null,
     ...(agent === undefined ? {} : { agent }),
+    work: ctx.url.searchParams.get('work') === 'new',
   })
 }
 
@@ -474,7 +528,7 @@ export async function renderUnderCard(
   // (`routes/chat.ts`). Only one who could chat is told there is none.
   const line =
     guardChat(ctx.access, 'document') === null ? t.noChatChannel : t.noChatRole
-  const parts = chatlessParts(layout, line)
+  const parts = chatlessParts(line)
   return drawn(
     {
       ...readerOf(ctx, card),
@@ -503,7 +557,7 @@ export async function renderCode(
 ): Promise<FrontRender> {
   const lang = langOf(ctx.request)
   const desktop = inDesktopApp(ctx.request)
-  const empty = chatlessParts('agents', '')
+  const empty = chatlessParts('')
   return drawn(
     {
       ...readerOf(ctx, card),
@@ -614,6 +668,8 @@ export async function dispatchFrontFragment(
       params.get('open') === '1',
       look,
       layout,
+      true,
+      sessionId === null && params.get('work') === 'new',
     )
     await view.reading?.done(view.open)
     return html(renderFrontView(view.model), view.status ?? 200)

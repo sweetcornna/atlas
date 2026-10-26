@@ -116,6 +116,11 @@ impl Hub {
         self.join("/app/quick")
     }
 
+    /// The new work page (P37.17 B): ⌘N, the tray and `qmo://new`.
+    pub fn new_work_url(&self) -> Url {
+        self.join("/app?work=new")
+    }
+
     /// The conversation `id`, which [`valid_session_id`] has checked.
     pub fn session_url(&self, id: &str) -> Url {
         self.join(&format!("/app?session={id}"))
@@ -323,11 +328,19 @@ mod tests {
             "https://hub.example.com/app?session=s_1-A"
         );
         assert_eq!(
+            hub.new_work_url().as_str(),
+            "https://hub.example.com/app?work=new"
+        );
+        assert_eq!(
             hub.login_url().as_str(),
             "https://hub.example.com/login?redirect=%2Fapp"
         );
         let under = parse_hub("https://example.com/hub/").unwrap();
         assert_eq!(under.app_url().as_str(), "https://example.com/hub/app");
+        assert_eq!(
+            under.new_work_url().as_str(),
+            "https://example.com/hub/app?work=new"
+        );
     }
 
     #[test]

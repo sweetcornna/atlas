@@ -20,7 +20,9 @@
  * and 拒绝 / 批准. Requests for other conversations are one line above the
  * composer with the way to the oldest of them. The cards live in their own
  * mount after `#fx-thread` (`#fx-asks`), which the front's client never
- * swaps, so a redraw of the thread leaves a card being decided alone.
+ * swaps, so a redraw of the thread leaves a card being decided alone. A work
+ * session in the side list with a request this person may decide is marked
+ * 等你 there (P37.17 B, `frontWork.ts`).
  *
  * ## What a card says
  *
@@ -360,6 +362,21 @@ ${APPROVAL_CARD_JS}
       if (scroller) scroller.scrollTop = scroller.scrollHeight;
     }
     banner(others);
+    asking();
+  }
+
+  // A work session in the side list with a request this person may decide
+  // is 等你 (P37.17 B, view/frontWork.ts): the row's mark, nothing else.
+  function asking() {
+    var waiting = {};
+    for (var i = 0; i < items.length; i++) {
+      if (approvalCard(items[i], w, role).allow) waiting[items[i].contextId] = true;
+    }
+    var rows = document.querySelectorAll('#fx-recents .fx-ritem-row[data-work]');
+    for (var r = 0; r < rows.length; r++) {
+      if (waiting[rows[r].getAttribute('data-session') || '']) rows[r].setAttribute('data-asking', '1');
+      else rows[r].removeAttribute('data-asking');
+    }
   }
 
   function banner(others) {
@@ -463,6 +480,8 @@ ${APPROVAL_CARD_JS}
   document.addEventListener('qianmo:front-view', function () {
     if (openSession() !== shownSession) place();
   });
+  // The side list was drawn again: its rows' 等你 again.
+  document.addEventListener('qianmo:front-side', asking);
   document.addEventListener('visibilitychange', poll);
   window.addEventListener('focus', poll);
   setInterval(poll, 5000);

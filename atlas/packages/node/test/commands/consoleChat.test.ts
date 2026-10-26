@@ -333,6 +333,31 @@ describe('chat sessions', () => {
     expect(transcript.value.turns).toEqual([])
   })
 
+  test('the resident mark (P37.17) is written with the session and read back after a restart; without it a session is not resident', async () => {
+    const storePath = join(directory, 'resident.ndjson')
+    const first = harness({ storePath })
+    const resident = await first.hub.open(TARGET, { resident: true })
+    const plain = await first.hub.open(TARGET)
+    if (!resident.ok || !plain.ok) throw new Error('unreachable')
+    expect(resident.value.resident).toBe(true)
+    expect('resident' in plain.value).toBe(false)
+    await first.hub.close()
+
+    const second = harness({ storePath, idPrefix: 'again' })
+    const listed = await second.hub.sessions()
+    if (!listed.ok) throw new Error('unreachable')
+    expect(
+      Object.fromEntries(
+        listed.value.map(one => [one.id, one.resident === true]),
+      ),
+    ).toEqual({ [resident.value.id]: true, [plain.value.id]: false })
+    // Only the resident one carries the field on disk: a line without it,
+    // as every line written before P37.17 is, reads as an ordinary session.
+    const lines = readFileSync(storePath, 'utf8').trim().split('\n')
+    const marked = lines.filter(line => line.includes('"resident":true'))
+    expect(marked).toHaveLength(1)
+  })
+
   test('answers a session it has never heard of with not_found', async () => {
     const h = harness()
     expect(await h.hub.transcript('nope')).toMatchObject({
