@@ -34,7 +34,9 @@
  * with the policy each turn ran in, `threads.json`),
  * `FAKE_CODEX_NO_SESSION=1` (`availableDecisions` without
  * `acceptForSession`), `FAKE_CODEX_IGNORE_TERM=1`, `FAKE_CODEX_ENV_LOG`
- * (where to write the environment it got).
+ * (where to write the environment it got), `FAKE_CODEX_ONE_WRITE=1` (the
+ * `turn/start` answer and what the turn says until it first waits go out in
+ * one write: what a client reading late gets in one read).
  */
 
 import { randomBytes } from 'node:crypto'
@@ -64,8 +66,13 @@ if (process.env.FAKE_CODEX_ENV_LOG)
     JSON.stringify({ ...process.env, __cwd: process.cwd() }),
   )
 
-const send = (message: Record<string, unknown>) =>
-  process.stdout.write(`${JSON.stringify(message)}\n`)
+/** Lines held for one write (`FAKE_CODEX_ONE_WRITE`), while a turn starts. */
+let held: string[] | undefined
+const send = (message: Record<string, unknown>) => {
+  const line = `${JSON.stringify(message)}\n`
+  if (held !== undefined) held.push(line)
+  else process.stdout.write(line)
+}
 
 const threadsFile = state ? join(state, 'threads.json') : undefined
 function threads(): Record<string, number> {
@@ -419,8 +426,16 @@ createInterface({ input: process.stdin }).on('line', line => {
       const turnId = `turn-${turns}`
       const input = params.input as { text: string }[]
       const text = input.map(part => part.text).join('')
+      if (process.env.FAKE_CODEX_ONE_WRITE === '1') held = []
       send({ id: message.id, result: { turn: { id: turnId } } })
       void run(turnId, text)
+      if (held !== undefined)
+        // After the turn's promise steps, before any I/O it waits for.
+        setImmediate(() => {
+          const out = (held ?? []).join('')
+          held = undefined
+          process.stdout.write(out)
+        })
       return
     }
     case 'turn/interrupt':
