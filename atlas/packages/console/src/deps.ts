@@ -38,6 +38,12 @@ import type {
 import type { AvatarsPort } from './avatar.js'
 import type { CodeCopiesPort, CodeLinksPort } from './codeRemote.js'
 import type { ConsoleFailure, ConsoleResult } from './contracts.js'
+import type {
+  WorkActivity,
+  WorkFileRef,
+  WorkflowId,
+  WorkOutput,
+} from './work.js'
 
 import type { AuditRecord, MessageChain } from '@qianmo/audit'
 import type { UsagePort, ApprovalPort } from './governance.js'
@@ -505,8 +511,15 @@ export interface ChatTurn {
   readonly code?: string
   /** 缺省为 `message`；`notice` 是任务跑到一半推过来的一条过程。 */
   readonly variant?: ChatTurnVariant
-  /** 宿主区分智能体显式通知、自动工具过程与后台任务结果（P29）；旧转录不带此字段。 */
-  readonly noticeSource?: 'agent' | 'step' | 'task'
+  /**
+   * 宿主区分智能体显式通知、自动工具过程与后台任务结果（P29），以及交付的
+   * 文件卡（P37.17 B，`files`）；旧转录不带此字段。
+   */
+  readonly noticeSource?: 'agent' | 'step' | 'task' | 'files'
+  /** 只在 `noticeSource: 'files'` 的行上：交给人的文件，按交付顺序（work-tasks.md §3.2）。 */
+  readonly files?: readonly WorkFileRef[]
+  /** 操作者那一行带着工作流发出（work-tasks.md §3.1、§2.2）。 */
+  readonly workflow?: WorkflowId
   /** 通知所由的任务（通知信封自己的 taskId 不是这个任务号）。 */
   readonly causeTaskId?: string
   /** 只有 `notice` 有：这条过程的分量。 */
@@ -578,11 +591,24 @@ export interface ChatSession {
   readonly running?: true
   /** 后台子智能体的会话（P29）：中枢替任务主人开的，不是人开的对话。 */
   readonly background?: true
+  /** 工作会话（P37.17 B，work-tasks.md §1.1）：经 `POST /v0/work/sessions` 开出。 */
+  readonly work?: true
+  /** 开这条工作会话时选的工作流；没选时不出现。 */
+  readonly workflow?: WorkflowId
+}
+
+/** {@link ChatPort.open} 的选项（work-tasks.md §1.1）。 */
+export interface ChatOpenOptions {
+  readonly work?: true
+  /** 只在 `work` 为真时接受。 */
+  readonly workflow?: WorkflowId
 }
 
 export interface ChatTranscript {
   readonly session: ChatSession
   readonly turns: readonly ChatTurn[]
+  /** 节点报来的进度与上下文（work-tasks.md §3.3）；从没报过时不出现。 */
+  readonly activity?: WorkActivity
 }
 
 export interface ChatSendInput {
@@ -629,6 +655,11 @@ export interface ChatSendInput {
    * as the person typed it.
    */
   readonly context?: string
+  /**
+   * 这一句带着工作流发（work-tasks.md §2.2）：发给节点的 prompt 前面加一行
+   * 点名技能（`workflowPrompt`），转录里操作者那一行仍是原文、另带 `workflow`。
+   */
+  readonly workflow?: WorkflowId
 }
 
 /**
@@ -656,7 +687,10 @@ export interface ChatPort {
   targets(): Promise<ConsoleResult<readonly ChatTarget[]>>
   sessions(): Promise<ConsoleResult<readonly ChatSession[]>>
   /** 开一条新会话。同一个目标可以有多条——它们是不同的话题，不是重复。 */
-  open(target: string): Promise<ConsoleResult<ChatSession>>
+  open(
+    target: string,
+    options?: ChatOpenOptions,
+  ): Promise<ConsoleResult<ChatSession>>
   transcript(sessionId: string): Promise<ConsoleResult<ChatTranscript>>
   /**
    * 发一句话。
@@ -672,6 +706,43 @@ export interface ChatPort {
    * 会话不存在时是失败值。
    */
   note?(sessionId: string, text: string): Promise<ConsoleResult<ChatTurn>>
+}
+
+/** 产出端口的失败：在 {@link ConsoleFailure} 之外多一个 `limit`（413）。 */
+export interface WorkFailure {
+  readonly code: ConsoleFailure['code'] | 'limit'
+  readonly message: string
+}
+
+export type WorkResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly failure: WorkFailure }
+
+/** 一个取回中的文件：头先到，正文边从节点取边写（work-tasks.md §4.3）。 */
+export interface WorkDownload {
+  readonly name: string
+  readonly size: number
+  readonly mime: string
+  /** 中途文件被改或节点断开时以错误结束，浏览器得到不完整的下载。 */
+  readonly body: ReadableStream<Uint8Array>
+}
+
+/**
+ * 工作会话的产出（work-tasks.md §4.2–§4.4）。节点与智能体取自会话记录，
+ * 调用方从不传路径前缀；鉴权（能不能读这条会话）在路由层先做完。
+ */
+export interface WorkPort {
+  outputs(session: ChatSession): Promise<
+    WorkResult<{
+      readonly files: readonly WorkOutput[]
+      readonly truncated: boolean
+    }>
+  >
+  fetch(
+    session: ChatSession,
+    name: string,
+    view: 'file' | 'preview',
+  ): Promise<WorkResult<WorkDownload>>
 }
 
 // ---------------------------------------------------------------------------
@@ -1290,6 +1361,10 @@ export const CONSOLE_ACTIONS = [
   'chat.transcript.open',
   /** 主智能体（初始化配置页），target 是地址或 `default`（清除）。 */
   'chat.main',
+  /** 开工作会话（P37.17 B，work-tasks.md §1.2）：target 是执行者地址。 */
+  'work.session.open',
+  /** 下载或预览一个产出（只读事件）：target 是 `<会话 id> <文件名>`。 */
+  'work.output.read',
   /** 账号 API 的写请求，`accounts.<方法>`，target 是 `/v0/accounts` 之后的路径。 */
   'accounts.post',
   'accounts.put',
@@ -1456,7 +1531,7 @@ export const CONSOLE_ACTIONS = [
  * 「只读事件」或「全部」才列（{@link ActionQuery.kind}）。新增只读动作时在这里补一行。
  */
 export const CONSOLE_READ_ACTIONS: readonly (typeof CONSOLE_ACTIONS)[number][] =
-  ['chat.transcript.open']
+  ['chat.transcript.open', 'work.output.read']
 
 /** 这个动作名是不是只读事件（{@link CONSOLE_READ_ACTIONS}）。 */
 export function isReadAction(action: string): boolean {
@@ -2472,6 +2547,11 @@ export interface ConsoleDeps {
   readonly wakeTargets?: readonly WakeTarget[]
   /** Absent removes the chat page and every `/v0/chat/*` route (§4.5). */
   readonly chat?: ChatPort
+  /**
+   * 工作会话的产出（P37.17 B，work-tasks.md §4）：经中枢→节点控制链路列与取。
+   * 缺席时列产出、下载、预览答 501；开工作会话与活动照常（只用 {@link chat}）。
+   */
+  readonly work?: WorkPort
   /**
    * The main agent the conversation home page opens (`--chat-default`). Absent,
    * or not in the roster, the home page opens the first dialable agent.

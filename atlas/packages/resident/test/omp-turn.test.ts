@@ -6,6 +6,7 @@ import {
   OmpResidentTurnPort,
   parseTurnStepDedupKey,
   turnFailureKind,
+  type ResidentToolEvent,
   type ResidentTurnProgress,
 } from '../src/omp-turn.js'
 import type {
@@ -325,6 +326,72 @@ describe('omp resident turns', () => {
     expect(new Set(progress.map(p => p.dedupKey)).size).toBe(progress.length)
     for (const p of progress)
       expect(parseTurnStepDedupKey(p.dedupKey)?.networkMsgId).toBe('network-1')
+  })
+  test('tool events carry raw starts and ends, then the turn end; a throwing hook does not fail the turn (P37.17 B)', async () => {
+    const events: [string, ResidentToolEvent][] = []
+    const f = fixture({
+      onToolEvent: (turn, event) => {
+        events.push([turn.messageId, event])
+        if (event.phase === 'start') throw new Error('host bookkeeping')
+      },
+    })
+    const result = f.port.execute(input, async () => {})
+    await started(f)
+    f.emit({
+      type: 'tool_execution_start',
+      toolName: 'todo',
+      toolCallId: 't-1',
+      args: { ops: [] },
+    })
+    f.emit({ type: 'tool_execution_start', toolName: 'read' })
+    f.emit({
+      type: 'tool_execution_end',
+      toolName: 'todo',
+      toolCallId: 't-1',
+      result: { details: { phases: [] } },
+    })
+    f.emit({
+      type: 'tool_execution_end',
+      toolName: 'read',
+      toolCallId: 'r-1',
+      isError: true,
+    })
+    f.emit(assistant('done'))
+    f.emit(complete)
+    f.admit()
+    expect(await result).toMatchObject({ outcome: 'completed' })
+    expect(events).toEqual([
+      [
+        'message-1',
+        {
+          phase: 'start',
+          toolCallId: 't-1',
+          toolName: 'todo',
+          args: { ops: [] },
+        },
+      ],
+      [
+        'message-1',
+        {
+          phase: 'end',
+          toolCallId: 't-1',
+          toolName: 'todo',
+          isError: false,
+          details: { phases: [] },
+        },
+      ],
+      [
+        'message-1',
+        {
+          phase: 'end',
+          toolCallId: 'r-1',
+          toolName: 'read',
+          isError: true,
+          details: undefined,
+        },
+      ],
+      ['message-1', { phase: 'turn_end' }],
+    ])
   })
 })
 

@@ -816,7 +816,7 @@ export function withTaskNotes(
   return {
     targets: () => chat.targets(),
     sessions: () => chat.sessions(),
-    open: target => chat.open(target),
+    open: (target, options) => chat.open(target, options),
     transcript: sessionId => chat.transcript(sessionId),
     subscribe: listener => chat.subscribe(listener),
     ...(note === undefined ? {} : { note }),

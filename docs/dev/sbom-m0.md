@@ -5,7 +5,7 @@
 
 > **本文件由 `bun run atlas:sbom` 生成，不要手改。**改判据请改 `atlas/scripts/sbom.ts`。
 >
-> 输入：`bun.lock`（SHA-256 `e4bceab141154458…`）+ `node_modules` 的 `license` 字段。机器可读版本见同目录 [`sbom-m0.json`](./sbom-m0.json)（CycloneDX 1.5 形状）。
+> 输入：`bun.lock`（SHA-256 `fde51f2eea77b948…`）+ `node_modules` 的 `license` 字段。机器可读版本见同目录 [`sbom-m0.json`](./sbom-m0.json)（CycloneDX 1.5 形状）。
 
 对应 roadmap **P8.4** 交付物①，章程 §5 与风险 L-2 的证据链见 [`license-chain-m0.md`](./license-chain-m0.md)。
 
@@ -21,25 +21,25 @@
 
 | 项 | 数 |
 |---|---|
-| 组件总数（lockfile 条目，含重复解析） | 956 |
-| ├ 第三方组件 | 907 |
+| 组件总数（lockfile 条目，含重复解析） | 985 |
+| ├ 第三方组件 | 936 |
 | └ workspace 自有包 | 49 |
-| 唯一 name@version（第三方） | 852 |
-| runtime 可达 | 238 |
-| dev 可达 | 711 |
+| 唯一 name@version（第三方） | 875 |
+| runtime 可达 | 263 |
+| dev 可达 | 715 |
 | 未被任何根可达（解析遗漏或纯 peer） | 7 |
 | 本机未安装（去重，平台受限 optional） | 223 |
 
 ## 2. 许可分布
 
-按归一化后的许可表达式统计，范围为**本机已安装的第三方组件**（去重到 name@version，共 618 项）。未安装的 234 项读不到字段，单列在 §5，不计入本表。
+按归一化后的许可表达式统计，范围为**本机已安装的第三方组件**（去重到 name@version，共 641 项）。未安装的 234 项读不到字段，单列在 §5，不计入本表。
 
 「分类」按 §3 的 SPDX 求值口径给出：`(A OR B)` 取较宽松的一支，所以 `(BSD-3-Clause OR GPL-2.0)` 显示为宽松。
 
 | 许可表达式 | 分类 | 组件数 |
 |---|---|---|
-| `MIT` | 宽松 | 460 |
-| `ISC` | 宽松 | 53 |
+| `MIT` | 宽松 | 479 |
+| `ISC` | 宽松 | 55 |
 | `Apache-2.0` | 宽松 | 44 |
 | `BSD-3-Clause` | 宽松 | 23 |
 | `BSD-2-Clause` | 宽松 | 9 |
@@ -50,7 +50,9 @@
 | `SEE LICENSE IN LICENSE` | 未判定 | 2 |
 | `(Apache-2.0 AND BSD-3-Clause)` | 宽松 | 1 |
 | `(BSD-2-Clause OR MIT OR Apache-2.0)` | 宽松 | 1 |
+| `(MIT AND Zlib)` | 宽松 | 1 |
 | `(MIT OR Apache-2.0)` | 宽松 | 1 |
+| `(MIT OR GPL-3.0-or-later)` | 宽松 | 1 |
 | `0BSD` | 宽松 | 1 |
 | `CC-BY-4.0` | 宽松 | 1 |
 | `GPL-3.0-only` | 强传染 | 1 |
@@ -82,6 +84,7 @@
 |---|---|---|---|---|---|
 | `@modelcontextprotocol/server-filesystem` | 2026.7.10 | `SEE LICENSE IN LICENSE` | see-license-in, non-spdx | **无** | @qianmo/node → @modelcontextprotocol/server-filesystem |
 | `@modelcontextprotocol/server-memory` | 2026.7.4 | `SEE LICENSE IN LICENSE` | see-license-in, non-spdx | **无** | @qianmo/node → @modelcontextprotocol/server-memory |
+| `pako` | 1.0.11 | `(MIT AND Zlib)` | non-spdx | `LICENSE` | @qianmo/node → docx → jszip → pako |
 
 本脚本只读字段、不读授权正文。**上表每一项的人工核读结论记在 [`license-chain-m0.md`](./license-chain-m0.md) §4**，其中包含本次审计查到的非开源授权项的定性与其影响面判定。
 
@@ -151,7 +154,7 @@
 | `@qianmo/capability` | `atlas/packages/capability` | AGPL-3.0-or-later | 是 | 17/17 |
 | `@qianmo/capacity` | `atlas/packages/capacity` | AGPL-3.0-or-later | 是 | 13/13 |
 | `@qianmo/client` | `atlas/packages/client` | AGPL-3.0-or-later | 是 | 52/52 |
-| `@qianmo/console` | `atlas/packages/console` | AGPL-3.0-or-later | 是 | 294/294 |
+| `@qianmo/console` | `atlas/packages/console` | AGPL-3.0-or-later | 是 | 298/298 |
 | `@qianmo/diagnosis` | `atlas/packages/diagnosis` | AGPL-3.0-or-later | 是 | 6/6 |
 | `@qianmo/elastic` | `atlas/packages/elastic` | AGPL-3.0-or-later | 是 | 4/4 |
 | `@qianmo/extension` | `atlas/packages/extension` | AGPL-3.0-or-later | 是 | 12/12 |
@@ -161,8 +164,8 @@
 | `@qianmo/mailbox` | `atlas/packages/mailbox` | AGPL-3.0-or-later | 是 | 5/5 |
 | `@qianmo/memory` | `atlas/packages/memory` | AGPL-3.0-or-later | 是 | 23/23 |
 | `@qianmo/negotiation` | `atlas/packages/negotiation` | AGPL-3.0-or-later | 是 | 7/7 |
-| `@qianmo/node` | `atlas/packages/node` | AGPL-3.0-or-later | 是 | 466/466 |
-| `@qianmo/paths` | `atlas/packages/paths` | AGPL-3.0-or-later | 是 | 3/3 |
+| `@qianmo/node` | `atlas/packages/node` | AGPL-3.0-or-later | 是 | 481/481 |
+| `@qianmo/paths` | `atlas/packages/paths` | AGPL-3.0-or-later | 是 | 4/4 |
 | `@qianmo/protocol` | `atlas/packages/protocol` | AGPL-3.0-or-later | 是 | 20/20 |
 | `@qianmo/providers` | `atlas/packages/providers` | AGPL-3.0-or-later | 是 | 18/18 |
 | `@qianmo/recall` | `atlas/packages/recall` | AGPL-3.0-or-later | 是 | 65/65 |

@@ -865,6 +865,12 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/v0/chat/sessions/<会话 id>` | **成员 / ops / 管理令牌** | 转录 |
 | POST | `/v0/chat/sessions/<会话 id>/messages` | **成员 / ops / 管理令牌** | 发一句话，返回**操作者那一轮**（§6.4） |
 | GET | `/v0/chat/stream` | **成员 / ops / 管理令牌** | SSE，事件只有 `{sessionId, revision}`（§6.6） |
+| GET | `/v0/work/workflows` | **成员 / ops / 管理令牌** | 六个工作流 `{ id, skill, outputs }`（[`work-tasks.md`](./work-tasks.md) §2.3） |
+| POST | `/v0/work/sessions` | **成员 / ops / 管理令牌** | 开一条工作会话 `{ agent?, workflow?, text? }`，答 `{ session, turn }`（work-tasks.md §1.2） |
+| GET | `/v0/work/sessions/<会话 id>/activity` | **成员 / ops / 管理令牌** | 进度、上下文与交付过的文件（work-tasks.md §4.5），按读转录记账 |
+| GET | `/v0/work/sessions/<会话 id>/outputs` | **成员 / ops / 管理令牌** | 现场向执行节点列产出目录（work-tasks.md §4.2）；没接控制链路答 501 |
+| GET | `/v0/work/sessions/<会话 id>/file?name=<相对路径>` | **成员 / ops / 管理令牌**（`stream`） | 下载一个产出（work-tasks.md §4.3），记只读事件 `work.output.read` |
+| GET | `/v0/work/sessions/<会话 id>/preview?name=<相对路径>` | **成员 / ops / 管理令牌**（`stream`） | 不含脚本的自包含 HTML 预览，`script-src 'none'`、`frame-ancestors 'self'`、`sandbox`（work-tasks.md §4.4） |
 | GET | `/fragments/chat/sessions?active=<会话 id>` | **成员 / ops / 管理令牌** | HTML 片段 |
 | GET | `/fragments/chat/thread/<会话 id>` | **成员 / ops / 管理令牌** | HTML 片段 |
 | GET | `/fragments/chat/greet?target=<地址>` | **成员 / ops / 管理令牌** | 旧问候片段保持兼容；前台使用 `front/view` |
@@ -947,10 +953,12 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 | 等级 | 哪些路由 | cookie 单独够不够 |
 | --- | --- | --- |
 | `document` | 每个区域页：`GET /`、`/admin/nodes`、`/admin/audit`……（`routes/` 里各模块的 `page`） | **够。**顶层导航带不了自定义头；而外站页面就算逼浏览器导航过来，同源策略让它一个字节都读不到，渲染一张页面本身也不改变这台控制台或它背后的网络 |
-| `stream` | `GET /v0/chat/stream` | **够，除非 `Sec-Fetch-Site` 说调用者来自别的源。**`EventSource` 同样带不了头，所以它只能拿这个等级 |
+| `stream` | `GET /v0/chat/stream`；`GET /v0/work/sessions/<会话 id>/file`、`…/preview` | **够，除非 `Sec-Fetch-Site` 说调用者来自别的源。**`EventSource`、`<a download>` 与 `<iframe src>` 同样带不了头，所以它们只能拿这个等级 |
 | `guarded` | **其余每一条要凭据的**：所有写、所有 JSON 读、所有 HTML 片段 | **不够**，必须同时带 `X-Qianmo-Console`。跨源调用者设不了它，因为那会触发一次本服务从不回答的预检 |
 
-**`/v0/chat/stream` 是唯一一条非文档、却接受纯 cookie 的路由**，所以它单独配了那个
+**`/v0/chat/stream` 与工作产出的 `file`、`preview` 两条（P37.17 B，[`work-tasks.md`](./work-tasks.md)
+§4.6）是仅有的三条非文档、却接受纯 cookie 的路由**；后两条只读、答复带
+`cross-origin-resource-policy: same-origin`，预览另带 `frame-ancestors 'self'`。它们因此单独配了那个
 `Sec-Fetch-Site` 检查——`SameSite` 漏掉的恰恰是「同站但不同端口」，而这个头由浏览器写、
 页面脚本伪造不了。**但它是 belt，不是 braces**：不发这个头的浏览器会退回上面那套规则，
 真正 fail-closed 的仍然是那个自定义头（`auth.ts` 的 `isCrossOriginRequest`、`http.ts` 的
