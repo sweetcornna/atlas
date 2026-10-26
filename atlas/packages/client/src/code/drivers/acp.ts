@@ -485,12 +485,15 @@ export class AcpAgent implements AgentProcess {
   }
 
   /**
-   * Puts the agent in `mode`'s ACP mode. Where it offers no such mode, the
-   * runner answers by the mode, unless that leaves it looser than asked:
-   * then this throws, and no line is sent in it. Where it refuses the
-   * switch (an untrusted folder, a policy of its own), the runner does not
-   * go around it: a change of mode (`change`) is refused; before a line it
-   * stays in its own mode, says so, and what it asks is the person's.
+   * Puts the agent in `mode`'s ACP mode. Where it reports no modes at all,
+   * the runner answers by the mode (as for opencode and dsh). Where it would
+   * stay looser than asked (it lacks the mode, or refuses the switch), this
+   * throws, and no line is sent in it. Otherwise the runner does not go
+   * around the agent: a mode it lacks, or a switch it refuses (an untrusted
+   * folder, a policy of its own), refuses a change of mode (`change`);
+   * before a line the session goes to the widest of its own modes no looser
+   * than asked (refused: the one it is in), says so, and the runner answers
+   * by that mode only.
    */
   async #applyMode(
     channel: AcpChannel,
@@ -518,6 +521,23 @@ export class AcpAgent implements AgentProcess {
           'E_AGENT',
           `${name} 没有「${MODE_NAMES[mode]}」对应的模式，它现在是 ${current}`,
         )
+      // Nothing stricter to fall to: the person answers everything.
+      if (mode === 'off') return
+      const lacking = `${name} 没有「${MODE_NAMES[mode]}」（它没提供 ${table[mode].join(' 或 ')}）`
+      if (change) throw new CodeError('E_AGENT', lacking)
+      const now =
+        (['accept-edits', 'off'] as const).find(
+          tier =>
+            STRICTNESS[tier] < STRICTNESS[mode] &&
+            table[tier].some(id =>
+              offered.available.some(one => one.id === id),
+            ),
+        ) ?? 'off'
+      this.#mode = now
+      this.#hooks.modeChanged(now)
+      this.#hooks.notice(`${lacking}，按「${MODE_NAMES[now]}」继续`, 'warn')
+      // Then into that mode of its own (`off` without one stops there).
+      await this.#applyMode(channel, now)
       return
     }
     try {

@@ -426,17 +426,83 @@ describe.skipIf(!posix)('the runner with ACP agents', () => {
     expect(((await r.call('list')).sessions as Message[])[0]!.mode).toBe('off')
   })
 
-  test('跳过权限确认 where the agent has no yolo: the runner allows every call itself', async () => {
+  test('跳过权限确认 where Gemini offers no yolo: the widest mode it has, said so; a command is the person’s', async () => {
     const at = box()
     const r = runner(at, 'gemini', { agent: { FAKE_ACP_NO_YOLO: '1' } })
     const folder = await pick(r, at.work)
-    const id = await begin(r, folder, 'gemini', 'bash ls', 'full-access')
-    expect(modesSet(at)).toEqual([])
-    expect(r.turns(id).filter(one => one.ask !== undefined)).toEqual([])
+    const id = await begin(
+      r,
+      folder,
+      'gemini',
+      'bash ls',
+      'full-access',
+      'waiting',
+    )
+    expect(modesSet(at)).toEqual(['autoEdit'])
+    expect(
+      r
+        .turns(id)
+        .map(one => String(one.text))
+        .find(text => text.startsWith('Gemini CLI 没有「跳过权限确认」')),
+    ).toBe(
+      'Gemini CLI 没有「跳过权限确认」（它没提供 yolo），按「自动接受编辑」继续',
+    )
+    expect(((await r.call('list')).sessions as Message[])[0]!.mode).toBe(
+      'accept-edits',
+    )
+    // The runner answers by 自动接受编辑, not by what was picked: the command is asked.
+    expect(await question(r, id)).toMatchObject({
+      input: 'ls',
+      options: ['once', 'session', 'deny'],
+    })
+    await answer(r, id, 'once')
     expect(r.turns(id).find(one => one.tool !== undefined)!.tool).toMatchObject(
-      { status: 'done', command: 'ls', approvedBy: 'mode' },
+      { status: 'done', command: 'ls', approvedBy: 'user' },
     )
     expect(chosen(at)).toEqual(['proceed_once'])
+    // Asked for in the session, it is refused, and the mode stays.
+    expect(
+      await refused(
+        r.call('session.mode', { session: id, mode: 'full-access' }),
+      ),
+    ).toBe('E_AGENT')
+    expect(((await r.call('list')).sessions as Message[])[0]!.mode).toBe(
+      'accept-edits',
+    )
+    expect(modesSet(at)).toEqual(['autoEdit'])
+  })
+
+  test('跳过权限确认 for opencode, which has no modes: the runner still allows every call', async () => {
+    const at = box()
+    const r = runner(at, 'opencode')
+    const folder = await pick(r, at.work)
+    const outside = path.join(at.root, 'elsewhere.txt')
+    const id = await begin(r, folder, 'opencode', 'bash ls', 'full-access')
+    const mark = r.mark
+    await r.call('session.send', {
+      session: id,
+      text: `edit ${outside}`,
+      clientId: 'c2',
+    })
+    await r.state(id, 'idle', mark)
+    expect(r.turns(id).filter(one => one.ask !== undefined)).toEqual([])
+    expect(
+      r
+        .turns(id)
+        .filter(one => one.tool !== undefined)
+        .map(one => one.tool),
+    ).toMatchObject([
+      { status: 'done', command: 'ls', approvedBy: 'mode' },
+      { status: 'done', approvedBy: 'mode' },
+    ])
+    expect(fs.existsSync(outside)).toBe(true)
+    expect(chosen(at)).toEqual(['once', 'once'])
+    expect(modesSet(at)).toEqual([])
+    expect(
+      r
+        .turns(id)
+        .some(one => String(one.text).includes('没有「跳过权限确认」')),
+    ).toBe(false)
   })
 
   test('the mode changed in a session: session/set_mode now; refused, the old one stays', async () => {
