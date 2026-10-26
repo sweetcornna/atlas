@@ -15,6 +15,7 @@
  */
 
 import type { Lang } from '../i18n.js'
+import { workClientWords } from './frontWork.js'
 
 /** What a step's verb or tool is called, by kind of work (`front.ts`). */
 interface ActivityWords {
@@ -41,7 +42,8 @@ interface ActivityWords {
 interface KeyWords {
   readonly send: string
   readonly newline: string
-  readonly newChat: string
+  /** ⌘N (⌘⇧O in a browser): 开始一项工作 (P37.17 B). */
+  readonly newWork: string
   readonly search: string
   readonly side: string
   readonly panel: string
@@ -201,6 +203,13 @@ export interface FrontText {
   readonly recents: string
   readonly dayGroups: readonly [string, string, string, string]
   readonly noConversations: string
+  /**
+   * P37.17: an agent's conversations other than the reader's one with it
+   * (its ⋯, a dialog), read here and not written in, and the way back.
+   */
+  readonly otherChats: string
+  readonly readOnly: string
+  backTo(name: string): string
   /** Over a new conversation, by the reader's hour: morning, afternoon, evening. */
   readonly greetings: readonly [string, string, string]
   readonly pickAgent: string
@@ -285,6 +294,8 @@ export interface FrontText {
 interface FrontClientText {
   readonly messageTo: string
   readonly unavailable: string
+  /** The composer under a conversation read here and not written in (P37.17). */
+  readonly readOnly: string
   readonly opening: string
   readonly pickAgent: string
   readonly noSession: string
@@ -470,7 +481,7 @@ const ZH: FrontText = {
   keys: {
     send: '发送',
     newline: '换行',
-    newChat: '新对话',
+    newWork: '开始一项工作',
     search: '搜索',
     side: '收起或展开侧栏',
     panel: '会话面板',
@@ -510,6 +521,9 @@ const ZH: FrontText = {
   recents: '最近对话',
   dayGroups: ['今天', '昨天', '过去 7 天', '更早'],
   noConversations: '暂无对话',
+  otherChats: '其他对话',
+  readOnly: '只读',
+  backTo: name => `回到 ${name}`,
   greetings: ['早上好', '下午好', '晚上好'],
   pickAgent: '选择智能体',
   openInAgents: '在智能体界面打开',
@@ -710,7 +724,7 @@ const EN: FrontText = {
   keys: {
     send: 'Send',
     newline: 'New line',
-    newChat: 'New chat',
+    newWork: 'New task',
     search: 'Search',
     side: 'Collapse or expand the sidebar',
     panel: 'Session panel',
@@ -751,6 +765,9 @@ const EN: FrontText = {
   recents: 'Recent chats',
   dayGroups: ['Today', 'Yesterday', 'Previous 7 days', 'Older'],
   noConversations: 'No chats yet',
+  otherChats: 'Other conversations',
+  readOnly: 'Read only',
+  backTo: name => `Back to ${name}`,
   greetings: ['Good morning', 'Good afternoon', 'Good evening'],
   pickAgent: 'Choose an agent',
   openInAgents: 'Open in Agents',
@@ -951,7 +968,7 @@ const JA: FrontText = {
   keys: {
     send: '送信',
     newline: '改行',
-    newChat: '新しいチャット',
+    newWork: '新しいタスク',
     search: '検索',
     side: 'サイドバーの開閉',
     panel: 'セッションパネル',
@@ -991,6 +1008,9 @@ const JA: FrontText = {
   recents: '最近のチャット',
   dayGroups: ['今日', '昨日', '過去 7 日間', 'それ以前'],
   noConversations: 'チャットはまだありません',
+  otherChats: 'ほかの会話',
+  readOnly: '閲覧のみ',
+  backTo: name => `${name} に戻る`,
   greetings: ['おはようございます', 'こんにちは', 'こんばんは'],
   pickAgent: 'エージェントを選択',
   openInAgents: 'エージェント表示で開く',
@@ -1080,6 +1100,7 @@ const CLIENT: Readonly<Record<Lang, FrontClientText>> = {
   'zh-CN': {
     messageTo: '发消息给 ',
     unavailable: '暂不可对话',
+    readOnly: '只读',
     opening: '正在打开会话',
     pickAgent: '先选一个智能体',
     noSession: '没能开出会话',
@@ -1112,6 +1133,7 @@ const CLIENT: Readonly<Record<Lang, FrontClientText>> = {
   en: {
     messageTo: 'Message ',
     unavailable: 'Chat unavailable',
+    readOnly: 'Read only',
     opening: 'Opening the chat',
     pickAgent: 'Pick an agent first',
     noSession: "Couldn't open a chat",
@@ -1146,6 +1168,7 @@ const CLIENT: Readonly<Record<Lang, FrontClientText>> = {
   ja: {
     messageTo: 'メッセージ：',
     unavailable: 'チャットできません',
+    readOnly: '閲覧のみ',
     opening: 'チャットを開いています',
     pickAgent: '先にエージェントを選んでください',
     noSession: 'チャットを開けませんでした',
@@ -1411,6 +1434,7 @@ export function codeClientText(lang: Lang): string {
 export function frontClientText(lang: Lang): string {
   return JSON.stringify({
     ...CLIENT[lang],
+    ...workClientWords(lang),
     greetings: FRONT_TEXT[lang].greetings,
     switchAgent: FRONT_TEXT[lang].switchAgent,
   })

@@ -906,7 +906,11 @@ function runtimeScript(guards: TokenGuards): string {
           var detail = (err && err.message) || (data && data.message) ||
             (typeof err === 'string' ? err : '');
           var code = err && typeof err.code === 'string' ? err.code : '';
-          throw failure(code, res.status, detail ? String(detail) : 'HTTP ' + res.status);
+          var refused = failure(code, res.status, detail ? String(detail) : 'HTTP ' + res.status);
+          // The rest of the answer, for a page that needs more than the line:
+          // a work session that opened with its first line refused (P37.17 B).
+          refused.data = data;
+          throw refused;
         }
         return data;
       });

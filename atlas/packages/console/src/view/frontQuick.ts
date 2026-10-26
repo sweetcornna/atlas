@@ -13,8 +13,9 @@
  * than the card leaves the rest of it clear for the line to grow and the
  * roster to open.
  *
- * Sending opens a conversation and sends the line through the chat routes
- * the front uses (`POST /v0/chat/sessions`, then `…/messages`), then asks the
+ * Sending goes to the agent's resident conversation (opened if there is
+ * none, P37.17) through the chat routes the front uses
+ * (`POST /v0/chat/sessions`, then `…/messages`), then asks the
  * desktop app to show it in the main window (`qmo_open_session`); a browser
  * goes to `/app?session=<id>` instead (`assets/quickClient.ts`). The page
  * reads the roster and the figures and nothing else — no transcript, no

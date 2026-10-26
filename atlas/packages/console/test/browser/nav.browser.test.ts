@@ -667,8 +667,10 @@ describe.skipIf(SKIP !== null)('the first frame (§3.5)', () => {
       )
       expect(chat.page).toBe('chat')
       expect(chat.side).toBe('open')
+      // The agents' rows; no dated headings until there is work that is
+      // not with a bot (P37.17).
       expect(chat.rows).toBeGreaterThanOrEqual(1)
-      expect(chat.labels).toBeGreaterThanOrEqual(1)
+      expect(chat.labels).toBe(0)
       // Collapsing the side list is a change.
       const before = await tab.evaluate<number>('window.__layouts.length')
       await tab.evaluate(`${q('.fx-side-top [data-action="fx-side"]')}.click()`)

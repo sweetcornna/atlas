@@ -17,6 +17,7 @@ import { AccountBook, type AccountBookOptions } from '../src/accounts.js'
 import { CONSOLE_HEADER, type ConsoleTokens } from '../src/auth.js'
 import type {
   AuditPort,
+  ChatOpenOptions,
   ChatPort,
   ChatSendInput,
   ChatSession,
@@ -171,6 +172,9 @@ export class CountingChat implements ChatPort {
   #next = 0
   #revision = 0
 
+  /** Who may be talked to besides planner: whoever a test adds. */
+  readonly moreTargets: ChatTarget[] = []
+
   targets(): Promise<ConsoleResult<readonly ChatTarget[]>> {
     return Promise.resolve(
       ok([
@@ -182,6 +186,7 @@ export class CountingChat implements ChatPort {
           status: 'online',
           dialable: true,
         },
+        ...this.moreTargets,
       ]),
     )
   }
@@ -190,18 +195,23 @@ export class CountingChat implements ChatPort {
     return Promise.resolve(ok([...this.sessionsById.values()]))
   }
 
-  open(target: string): Promise<ConsoleResult<ChatSession>> {
+  open(
+    target: string,
+    options?: ChatOpenOptions,
+  ): Promise<ConsoleResult<ChatSession>> {
     this.opened += 1
     this.#next += 1
     const session: ChatSession = {
       id: `session-${this.#next}`,
       target,
-      node: 'tokyo-1',
-      agent: 'planner',
+      node: target.slice('qianmo://'.length, target.lastIndexOf('/')),
+      agent: target.slice(target.lastIndexOf('/') + 1),
       createdAt: START,
       updatedAt: START,
       turnCount: 0,
       preview: '',
+      // Kept as the node's store keeps it (P37.17).
+      ...(options?.resident === true ? { resident: true as const } : {}),
     }
     this.sessionsById.set(session.id, session)
     this.emit(session.id)
@@ -418,6 +428,28 @@ export async function person(
   const sid = cookieFrom(response, 'qianmo_session')
   if (sid === null || sid === '') throw new Error('redeem did not sign in')
   return { credential, sid }
+}
+
+/**
+ * A conversation of `who`'s with `target` that is not their resident one
+ * (P37.17): one opened before there was a resident conversation, as every
+ * conversation on a hub was before, and shown under the agent's 其他对话.
+ */
+export async function olderSession(
+  h: AccountsHarness,
+  who: Person,
+  target: string = ADDRESS,
+): Promise<string> {
+  const opened = await h.chat.open(target)
+  if (!opened.ok) throw new Error(opened.failure.message)
+  const principal = h.book.bearerPrincipal(who.credential)
+  if (!principal.ok || principal.value.kind !== 'user') {
+    throw new Error('no principal')
+  }
+  if (!h.book.recordOwner(opened.value.id, principal.value.subject).ok) {
+    throw new Error('no owner')
+  }
+  return opened.value.id
 }
 
 /**

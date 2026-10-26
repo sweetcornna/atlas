@@ -11,6 +11,11 @@
  * the rows the reader unfolded; while it is closed only the button's dot is
  * kept current, at a slower pace. 停止 sends `POST /v0/tasks/<id>/cancel` and
  * says 正在停止 until the answer.
+ *
+ * A work session's activity (P37.17 B, `view/frontWork.ts`) is the panel's
+ * head: on a wide window the panel opens by itself when one is on screen,
+ * unless the reader closed it, and closes again on leaving it if it was
+ * the page that opened it.
  */
 
 import { stripJsLineComments } from './client.js'
@@ -34,6 +39,8 @@ function panelScript(): string {
   var timer = null;
   var loading = false;
   var unfolded = {};
+  // The panel is open because a work session is on screen, not by choice.
+  var auto = false;
 
   function chosen() {
     try { return window.localStorage.getItem(KEY); } catch (e) { return null; }
@@ -55,6 +62,29 @@ function panelScript(): string {
     else root.removeAttribute('data-panel');
     panel.hidden = !open;
     if (button) button.setAttribute('aria-expanded', open ? 'true' : 'false');
+    document.dispatchEvent(new CustomEvent('qianmo:front-panel', { detail: { open: open } }));
+  }
+
+  function wide() {
+    return !!(window.matchMedia && window.matchMedia('(min-width: 1101px)').matches);
+  }
+  function workShown() {
+    var box = byId('fx-activity');
+    return !!box && !box.hidden;
+  }
+  // A work session came on screen or went (P37.17 B).
+  function followWork() {
+    if (workShown()) {
+      if (!isOpen() && chosen() !== 'closed' && wide()) {
+        auto = true;
+        show(true);
+        load();
+        schedule();
+      }
+    } else if (auto) {
+      auto = false;
+      if (isOpen()) { show(false); schedule(); }
+    }
   }
 
   function badge(body) {
@@ -111,6 +141,7 @@ function panelScript(): string {
   }
 
   function toggle() {
+    auto = false;
     var open = !isOpen();
     choose(open ? 'open' : 'closed');
     show(open);
@@ -145,10 +176,11 @@ function panelScript(): string {
   function start() {
     if (!byId('fx-panel')) return;
     var choice = chosen();
-    var wide = !!(window.matchMedia && window.matchMedia('(min-width: 1101px)').matches);
     if (choice === 'open') show(true);
+    else followWork();
+    document.addEventListener('qianmo:front-view', followWork);
     load().then(function (count) {
-      if (choice === null && wide && count > 0) show(true);
+      if (choice === null && wide() && count > 0 && !isOpen()) show(true);
       schedule();
     });
     qc.onExpire(function () { if (timer) clearTimeout(timer); timer = null; });

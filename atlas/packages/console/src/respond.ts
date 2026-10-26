@@ -35,7 +35,7 @@ const JSON_HEADERS = {
  * origin other than this one can contribute anything, and
  * `connect-src 'self'` keeps the token from being sent anywhere else.
  *
- * `img-src data:` is the one loosening, and it buys exactly one thing: the
+ * `img-src data:` is one loosening, and it buys exactly one thing: the
  * favicon, which is an inline SVG data URI in the document head. `data:` is not
  * an origin — nothing can be fetched through it and no third party can put
  * anything there — so the property this policy exists for ("no host other than
@@ -66,6 +66,11 @@ export function cspFor(scripts: readonly string[]): string {
     "base-uri 'none'",
     'img-src data:',
     "font-src 'none'",
+    // A work session's file preview (P37.17 B, `view/frontWork.ts`): an
+    // iframe with an empty `sandbox` on this origin's preview route. Every
+    // other document here says `frame-ancestors 'none'`, so nothing else of
+    // this origin can be framed, and no other origin can be at all.
+    "frame-src 'self'",
   ].join('; ')
 }
 

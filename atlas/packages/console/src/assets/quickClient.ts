@@ -6,10 +6,10 @@
  * runtime (`client.ts`).
  *
  * - **Enter sends**, Shift Enter breaks the line; the line grows to four.
- *   Sending opens a conversation with the agent on the card and sends the
- *   line through the chat routes the front uses. A conversation opened for a
- *   send that then failed is used again by the next try with the same agent,
- *   so one line never leaves two conversations behind.
+ *   Sending goes to the reader's one conversation with the agent on the card
+ *   (the hub opens it at the first line, P37.17) through the chat routes the
+ *   front uses. The id from a send that then failed is used again by the
+ *   next try with the same agent.
  * - **Then the main window.** In the desktop app the conversation is handed
  *   over with `qmo_open_session` and the card is cleared for next time; in a
  *   browser the page goes to `/app?session=<id>`.

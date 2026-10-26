@@ -47,7 +47,6 @@ const WRITE_ACTIONS = [
   'server-note',
   'confirm-deregister',
   'confirm-wake',
-  'fx-new',
 ]
 
 /** Everything in a document that would let its reader change something. */
@@ -175,7 +174,7 @@ describe('a read-only token', () => {
     )
     expect(servers).toContain('server-note')
     const chat = writeMarks(await (await h.handle(browse('/', ADMIN))).text())
-    expect(chat).toContain('fx-new')
+    expect(chat.some(mark => mark.includes('id="fx-composer"'))).toBe(true)
     expect(chat).toContain('data-write')
     const admin = await (await h.handle(browse('/admin/nodes', ADMIN))).text()
     expect(admin).not.toContain('id="read-only"')

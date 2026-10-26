@@ -59,6 +59,13 @@ export interface StoredChatSession {
   readonly node: string
   readonly agent: string
   readonly createdAt: number
+  /**
+   * A person's one conversation with this agent (P37.17, `@qianmo/console`'s
+   * `ChatSession.resident`). Written with the session and never again; whose
+   * it is lives in the account book, not here. Absent on every record written
+   * before it existed, which is what those sessions are: not resident.
+   */
+  readonly resident?: true
   /** A work session (P37.17 B, `work-tasks.md` §1.1). */
   readonly work?: true
   /** The workflow it was opened with; only on a work session. */
@@ -229,6 +236,7 @@ function toSession(value: unknown): StoredChatSession | null {
     node,
     agent,
     createdAt,
+    ...(value['resident'] === true ? { resident: true as const } : {}),
     ...(work ? { work: true as const } : {}),
     ...(work && isWorkflowId(value['workflow'])
       ? { workflow: value['workflow'] }

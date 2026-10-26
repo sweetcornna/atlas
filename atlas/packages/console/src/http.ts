@@ -63,7 +63,7 @@ import type { TenantScope } from './tenancy.js'
  * | GET | `/fragments/chat/front/{side,view,view/<id>}` | **chat** | `text/html` fragment |
  * | GET | `/v0/chat/targets` | **admin** | `{ targets }` |
  * | GET | `/v0/chat/sessions` | **admin** | `{ sessions }` |
- * | POST | `/v0/chat/sessions` | **admin** | the opened `ChatSession` |
+ * | POST | `/v0/chat/sessions` | **admin** | the reader's resident `ChatSession` with the agent, opened if none (P37.17) |
  * | GET | `/v0/chat/sessions/<enc id>` | **admin** | `ChatTranscript` |
  * | POST | `/v0/chat/sessions/<enc id>/messages` | **admin** | the operator `ChatTurn` |
  * | GET | `/v0/chat/stream` | **admin** | `text/event-stream` |

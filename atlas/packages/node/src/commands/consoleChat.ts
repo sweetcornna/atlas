@@ -903,6 +903,7 @@ export function createConsoleChatPort(
       ...(title === undefined ? {} : { title }),
       ...(running ? { running: true } : {}),
       ...(background ? { background: true } : {}),
+      ...(stored.resident === true ? { resident: true } : {}),
       ...(stored.work === true ? { work: true as const } : {}),
       ...(stored.workflow === undefined ? {} : { workflow: stored.workflow }),
     }
@@ -1071,6 +1072,10 @@ export function createConsoleChatPort(
         node: parsed.node,
         agent: parsed.agent,
         createdAt: now(),
+        // P37.17: a person's one conversation with this agent. Which existing
+        // session that is, the console decides before it gets here.
+        ...(openOptions?.resident === true ? { resident: true as const } : {}),
+        // P37.17 B: a work session, and the workflow it was opened with.
         ...(openOptions?.work === true ? { work: true as const } : {}),
         ...(workflow === undefined ? {} : { workflow }),
       }

@@ -282,8 +282,9 @@ describe('ownership', () => {
         )
       ).text()
       expect(page.includes(`data-session="${id}"`)).toBe(false)
-      // …while the member's own session is right there on the same page.
-      expect(page.includes(`data-session="${sa}"`)).toBe(true)
+      // …while the member's own conversation is right there on the same
+      // page: its agent's row (P37.17).
+      expect(page.includes(`data-latest="${sa}"`)).toBe(true)
     }
     expect(bodies.size).toBe(1)
     expect([...bodies][0]).toContain('这条会话不在本控制台的记录里')

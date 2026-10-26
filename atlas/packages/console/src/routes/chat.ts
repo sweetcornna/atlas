@@ -408,18 +408,18 @@ async function handleChatSessions(
     if (body === null) return fail(400, 'invalid', '请求体必须是 JSON 对象')
     const target = requiredString(body, 'target')
     if (!target.ok) return fail(400, 'invalid', target.message)
-    const blocked = await ctx.admit()
-    if (blocked !== null) return blocked
-    const result = await new ChatDispatch(ctx).open(
-      target.value,
-      async result => {
+    // The reader's one conversation with this agent (P37.17): the one they
+    // have, or a new one when they have none (`chatResident.ts`).
+    const result = await new ChatDispatch(ctx).resident(target.value, {
+      admit: () => ctx.admit(),
+      recorded: async result => {
         await ctx.record(
           'chat.session.open',
           target.value,
           ...outcomeOf(result),
         )
       },
-    )
+    })
     if (result instanceof Response) return result
     if (!result.ok) return failureResponse(result.failure)
     return json(result.value)

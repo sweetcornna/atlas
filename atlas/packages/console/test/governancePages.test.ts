@@ -47,11 +47,20 @@ describe('P18.16 quota and usage through HTTP', () => {
       )
       expect(opened.status).toBe(200)
       const id = (await jsonBody(opened))['id'] as string
+      // The same agent again is the same conversation (P37.17): no new
+      // session, so nothing for the session quota to refuse.
+      const again = await h.handle(
+        asBearer('POST', '/v0/chat/sessions', alice.credential, {
+          target: 'qianmo://tokyo-1/planner',
+        }),
+      )
+      expect(again.status).toBe(200)
+      expect((await jsonBody(again))['id']).toBe(id)
       expect(
         (
           await h.handle(
             asBearer('POST', '/v0/chat/sessions', alice.credential, {
-              target: 'qianmo://tokyo-1/planner',
+              target: 'qianmo://tokyo-1/reviewer',
             }),
           )
         ).status,

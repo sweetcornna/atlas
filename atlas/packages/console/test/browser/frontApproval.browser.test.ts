@@ -21,6 +21,7 @@ import {
   accountsHarness,
   asSession,
   CountingChat,
+  olderSession,
   person,
   START,
 } from '../accountsHarness.js'
@@ -196,16 +197,14 @@ describe.skipIf(SKIP !== null)('approval cards on the front', () => {
     const { port, decisions } = approvals(items)
     const h = accountsHarness({ deps: { approvals: port } })
     const ops = await person(h.handle, 'ops')
-    const ids: string[] = []
-    for (let i = 0; i < 2; i++) {
-      const opened = await h.handle(
-        asSession('POST', '/v0/chat/sessions', ops.sid, {
-          body: { target: ADDRESS },
-        }),
-      )
-      ids.push(((await opened.json()) as { id: string }).id)
-    }
-    const [a = '', b = ''] = ids
+    // The agent's conversation, and an older one with it (P37.17).
+    const opened = await h.handle(
+      asSession('POST', '/v0/chat/sessions', ops.sid, {
+        body: { target: ADDRESS },
+      }),
+    )
+    const { id: a } = (await opened.json()) as { id: string }
+    const b = await olderSession(h, ops)
     items.push(
       request('set-1', a, 'qianmo_settings_change', change('ops')),
       request(
@@ -466,16 +465,14 @@ describe.skipIf(SKIP !== null)('approval cards on the front', () => {
     const { port, decisions } = approvals(items, new Set(['mine-1']))
     const h = accountsHarness({ deps: { approvals: port } })
     const member = await person(h.handle, 'member')
-    const ids: string[] = []
-    for (let i = 0; i < 2; i++) {
-      const opened = await h.handle(
-        asSession('POST', '/v0/chat/sessions', member.sid, {
-          body: { target: ADDRESS },
-        }),
-      )
-      ids.push(((await opened.json()) as { id: string }).id)
-    }
-    const [a = '', b = ''] = ids
+    // The agent's conversation, and an older one with it (P37.17).
+    const opened = await h.handle(
+      asSession('POST', '/v0/chat/sessions', member.sid, {
+        body: { target: ADDRESS },
+      }),
+    )
+    const { id: a } = (await opened.json()) as { id: string }
+    const b = await olderSession(h, member)
     items.push(
       request('ops-1', a, 'qianmo_settings_change', change('ops')),
       request('mine-1', a, 'qianmo_settings_change', change('member'), 5),

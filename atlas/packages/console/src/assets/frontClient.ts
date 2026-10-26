@@ -3,9 +3,9 @@
 
 /**
  * The conversation front's script, on top of the shared runtime (`client.ts`).
- * One script draws both faces (`view/front.ts`): 智能体 at `/`, the agents
- * down the side, and 对话 at `/app`, the conversations down the side grouped
- * by day. Where they differ it asks which face it is on (`CHAT`).
+ * One script draws both faces (`view/front.ts`): 智能体 at `/` and 对话 at
+ * `/app`, each with the agents down the side, one conversation per agent
+ * (P37.17). Where they differ it asks which face it is on (`CHAT`).
  *
  * It keeps the runtime's two rules and adds nothing that bends them: the only
  * HTML it puts on the page is a fragment the server rendered (`view/front.ts`),
@@ -15,25 +15,26 @@
  *
  * ## What it does
  *
- * - **Switches without navigating.** Picking an agent opens its latest
- *   conversation (its welcome when it has none); opening a session from the
- *   history menu or the recents and starting a new conversation do the same
- *   swap of the head, the thread and the side list, and push the address
- *   (`/?session=`, `/?agent=`, or the same under `/app`), so the back button
- *   walks the conversations and a reload lands on the same one. A top-level
- *   navigation is never needed after the first load.
- * - **Marks what is unread.** Each agent row, and on `/app` each
- *   conversation row, carries when it last moved; the page remembers, per row
- *   and in this browser only, the last time it was looked at, and dots the
- *   rows that moved since. The tab's title counts them; in the desktop app so
- *   does the badge, and an agent finishing while the window is elsewhere is
- *   a notification (`assets/frontShell.ts`).
- * - **Keeps the recents in their days.** Rows are grouped 今天 · 昨天 · 过去
- *   7 天 · 更早 by this browser's clock, and the search line filters them by
- *   title and agent.
- * - **Keys**: ⌘N or Ctrl N a new conversation (⌘⇧O in a browser), ⌘K the
- *   search line, ⌘⇧S the sidebar, ⌘. the session panel; in a narrow window
- *   the sidebar is a drawer.
+ * - **Switches without navigating.** Picking an agent opens the reader's one
+ *   conversation with it (P37.17; its welcome before the first line); opening
+ *   one of its other conversations from ⋯ 其他对话 does the same swap of the
+ *   head, the thread and the side list, read-only, and every move pushes the
+ *   address (`/?agent=` for an agent's own conversation, nothing for the main
+ *   agent's, `/?session=` for any other; the same under `/app`), so the back
+ *   button walks the conversations and a reload lands on the same one. A
+ *   top-level navigation is never needed after the first load.
+ * - **Marks what is unread.** Each agent row carries when its conversation
+ *   last moved; the page remembers, per row and in this browser only, the
+ *   last time it was looked at, and dots the rows that moved since. The tab's
+ *   title counts them; in the desktop app so does the badge, and an agent
+ *   finishing while the window is elsewhere is a notification
+ *   (`assets/frontShell.ts`).
+ * - **Keeps the conversations that are not with one agent in their days**
+ *   (P37.17 B): grouped 今天 · 昨天 · 过去 7 天 · 更早 by this browser's clock;
+ *   the search line filters them by title, and the agents by name.
+ * - **Keys**: ⌘N or Ctrl N the main agent's conversation (⌘⇧O in a browser),
+ *   ⌘K the search line, ⌘⇧S the sidebar, ⌘. the session panel; in a narrow
+ *   window the sidebar is a drawer.
  * - **Paints the person's line first.** A sent line shows in the thread at
  *   once, marked as on its way, and is replaced by the server's rendering when
  *   the send returns; a failed send takes it back out and puts the text back
@@ -81,13 +82,20 @@ function frontScript(): string {
     side: '/fragments/chat/front/side',
     view: '/fragments/chat/front/view',
     create: '/v0/chat/sessions',
+    work: '/v0/work/sessions',
     stream: '/v0/chat/stream',
     model: '/fragments/providers/chat?target='
   };
   var POLL_MS = 2500;
   var MODEL_REUSE_MS = 30000;
   var STORE = 'qianmo.front.';
-  var state = { active: '', agent: '', scope: 'agent', busy: false };
+  // resident: the thread on screen is the agent's own conversation with the
+  // reader (P37.17), addressed by the agent rather than by its id. work: the
+  // page is 开始一项工作 (P37.17 B), agent being who does it; flow: the
+  // workflow the next line goes with.
+  var state = { active: '', agent: '', scope: 'agent', busy: false, resident: false, work: false, flow: '' };
+  // The agent whose other conversations the dialog lists (⋯ 其他对话).
+  var othersFor = '';
   var mainAgent = '';
   var pollTimer = null;
   var source = null;
@@ -174,13 +182,16 @@ function frontScript(): string {
     return thread ? thread.querySelectorAll('.fx-msg-agent:not(.fx-pending)').length : 0;
   }
 
+  // An agent's view is its resident conversation when the reader has one
+  // (P37.17): opening it is a reading like opening one by id.
+  // The new work page reads nothing: it is never an opening.
   function viewUrl(opening) {
     var query = [];
     var path = ROUTES.view;
-    if (state.active) {
-      path += '/' + encodeURIComponent(state.active);
-      if (opening) query.push('open=1');
-    } else if (state.agent) query.push('agent=' + encodeURIComponent(state.agent));
+    if (state.active) path += '/' + encodeURIComponent(state.active);
+    else if (state.work) query.push('work=new');
+    if (!state.active && state.agent) query.push('agent=' + encodeURIComponent(state.agent));
+    if (opening && (state.active || (state.agent && !state.work))) query.push('open=1');
     if (LAYOUT_QUERY) query.push(LAYOUT_QUERY);
     return path + (query.length ? '?' + query.join('&') : '');
   }
@@ -197,15 +208,24 @@ function frontScript(): string {
     return qc.loadHtml(viewUrl(opening)).then(function (html) {
       if (seq !== viewSeq || qc.isExpired()) return false;
       var was = threadState();
-      adopt(html, ['fx-head', 'fx-thread']);
+      adopt(html, ['fx-head', 'fx-thread', 'fx-activity']);
       stopRetry();
       keepFigure(figure);
       if (!opening) easeRedraw(was);
       keepUnsent();
       keepChoices(byId('fx-thread'));
+      keepChoices(byId('fx-activity'));
       var thread = byId('fx-thread');
       var target = thread ? thread.getAttribute('data-target') : '';
       if (target) state.agent = target;
+      state.work = !state.active && !!thread && thread.getAttribute('data-new-work') === '1';
+      // An agent's view came back as its resident conversation: from here
+      // on it is that session, refreshed and sent to by its id.
+      var shown = thread ? thread.getAttribute('data-session') || '' : '';
+      if (!state.active && shown) state.active = shown;
+      state.resident = !!thread && thread.getAttribute('data-resident') === '1';
+      // Opened by its id and found to be the agent's own: addressed by the agent.
+      if (opening && state.resident) setAddress(true);
       if (!opening && replyCount() > before) announce();
       paint();
       stampTimers();
@@ -310,18 +330,17 @@ function frontScript(): string {
     var listTop = list ? list.scrollTop : 0;
     return qc.loadHtml(ROUTES.side + (query.length ? '?' + query.join('&') : '')).then(function (html) {
       if (seq !== sideSeq || qc.isExpired()) return;
-      // A menu somebody has open is not swapped out from under the pointer.
-      if (CHAT) {
-        var ids = [];
-        if (!document.querySelector('#fx-recents .fx-more[open]')) ids.push('fx-recents');
-        var picker = byId('fx-agent-menu');
-        if (!picker || picker.hidden) ids.push('fx-agent-menu');
-        adopt(html, ids);
-        regroup();
-      } else {
-        var menuOpen = document.querySelector('#fx-agents .fx-more[open]');
-        adopt(html, menuOpen ? ['fx-history', 'fx-stack'] : ['fx-agents', 'fx-history', 'fx-stack']);
-      }
+      // A menu, the agent picker or the 其他对话 dialog somebody has open is
+      // not swapped out from under the pointer.
+      var ids = ['fx-stack'];
+      if (!document.querySelector('#fx-agents .fx-more[open]')) ids.push('fx-agents');
+      if (!document.querySelector('#fx-recents .fx-more[open]')) ids.push('fx-recents');
+      var others = byId('fx-others');
+      if (!others || !others.open) ids.push('fx-history');
+      var picker = byId('fx-agent-menu');
+      if (!picker || picker.hidden) ids.push('fx-agent-menu');
+      adopt(html, ids);
+      regroup();
       keepChoices(byId('fx-agents'));
       keepChoices(byId('fx-stack'));
       if (scroller) scroller.scrollTop = top;
@@ -331,6 +350,8 @@ function frontScript(): string {
       applyHistory();
       applyAgents();
       paintPicker();
+      // The approval poll marks a work session that waits on the reader (等你).
+      document.dispatchEvent(new CustomEvent('qianmo:front-side'));
     });
   }
 
@@ -389,13 +410,21 @@ function frontScript(): string {
     if (main) main.classList.toggle('is-welcome', welcome);
     var open = thread.getAttribute('data-open') === '1';
     var start = thread.getAttribute('data-start') === '1';
+    // Not the reader's own conversation with its agent: read here (P37.17).
+    var readOnly = thread.getAttribute('data-readonly') === '1';
     var name = agentName();
-    setComposer(open || start);
+    setComposer((open && !readOnly) || start);
     var box = byId('fx-text');
-    if (box) box.setAttribute('placeholder', open || start ? tx('messageTo', '发消息给 ') + name : tx('unavailable', '暂不可对话'));
+    if (box) {
+      box.setAttribute('placeholder', readOnly
+        ? tx('readOnly', '只读')
+        : state.work && start ? tx('newWorkPlaceholder', '描述要做的事')
+        : open || start ? tx('messageTo', '发消息给 ') + name : tx('unavailable', '暂不可对话'));
+    }
     markCurrent();
     paintGreeting();
     paintPicker();
+    paintFlow();
     paintComputer();
     paintModes();
   }
@@ -411,13 +440,14 @@ function frontScript(): string {
     if (typeof said === 'string' && line.textContent !== said) line.textContent = said;
   }
 
-  // /app's agent picker: shown over a new conversation only, holding the
-  // agent it goes to - the figure and the name copied from its menu row.
+  // The agent picker: over /app's new conversation and, as 由谁来做, the new
+  // work page of either face (P37.17 B), holding the agent it goes to - the
+  // figure and the name copied from its menu row.
   function paintPicker() {
     var pick = byId('fx-agent-pick');
     if (!pick) return;
     var thread = byId('fx-thread');
-    pick.hidden = !(thread && thread.getAttribute('data-welcome') === '1');
+    pick.hidden = !(thread && thread.getAttribute('data-welcome') === '1' && (CHAT || state.work));
     var rows = document.querySelectorAll('#fx-agent-menu [data-agent-pick]');
     var chosen = null;
     for (var i = 0; i < rows.length; i++) {
@@ -452,17 +482,31 @@ function frontScript(): string {
     var links = document.querySelectorAll('.fx-mode-item[data-mode]');
     for (var i = 0; i < links.length; i++) {
       var to = links[i].getAttribute('data-mode') === 'chat' ? '/app' : '/';
-      var query = state.active
-        ? '?session=' + encodeURIComponent(state.active)
-        : state.agent && state.agent !== mainAgent ? '?agent=' + encodeURIComponent(state.agent) : '';
-      links[i].setAttribute('href', to + query);
+      links[i].setAttribute('href', to + addressQuery());
     }
   }
 
+  // Where the conversation on screen lives (P37.17): an agent's own
+  // conversation by the agent (nothing for the main agent's), any other by
+  // its id.
+  function addressQuery() {
+    if (state.active && !state.resident) return '?session=' + encodeURIComponent(state.active);
+    if (state.work) return '?work=new';
+    return state.agent && state.agent !== mainAgent ? '?agent=' + encodeURIComponent(state.agent) : '';
+  }
+
   function markCurrent() {
+    var start = byId('fx-new-work');
+    if (start) {
+      if (state.work && !state.active) start.setAttribute('aria-current', 'true');
+      else start.removeAttribute('aria-current');
+    }
+    // The new work page and a work session are no agent's row (P37.17 B).
+    var thread = byId('fx-thread');
+    var working = state.work || (!!thread && thread.getAttribute('data-work') === '1');
     var rows = document.querySelectorAll('#fx-agents .fx-agent-row');
     for (var i = 0; i < rows.length; i++) {
-      var here = rows[i].getAttribute('data-address') === state.agent;
+      var here = !working && rows[i].getAttribute('data-address') === state.agent;
       rows[i].classList.toggle('is-current', here);
       var button = rows[i].querySelector('.fx-agent');
       if (button) {
@@ -543,8 +587,7 @@ function frontScript(): string {
   }
 
   function markUnread() {
-    var count = 0;
-    if (CHAT) count = markUnreadSessions();
+    var count = markUnreadSessions();
     var rows = document.querySelectorAll('#fx-agents .fx-agent-row');
     for (var i = 0; i < rows.length; i++) {
       var address = rows[i].getAttribute('data-address') || '';
@@ -605,10 +648,11 @@ function frontScript(): string {
     applyRecents();
   }
 
-  // The search in /app: titles and agents' names.
+  // The search over the conversations by day: titles and agents' names.
+  // How many rows it leaves, out of how many.
   function applyRecents() {
     var section = byId('fx-recents');
-    if (!section) return;
+    if (!section) return [0, 0];
     var search = byId('fx-search');
     var q = search ? search.value.trim().toLowerCase() : '';
     var rows = section.querySelectorAll('.fx-ritem-row');
@@ -622,12 +666,13 @@ function frontScript(): string {
     for (var g = 0; g < groups.length; g++) {
       groups[g].hidden = !groups[g].querySelector('.fx-ritem-row:not([hidden])');
     }
-    var none = section.querySelector('[data-empty="search"]');
-    if (none) none.hidden = !(q && rows.length && !shown);
+    return [shown, rows.length];
   }
 
+  // The search over the agents and the conversations under them: one line
+  // when it leaves nothing in either.
   function applyAgents() {
-    applyRecents();
+    var works = applyRecents();
     var section = byId('fx-agents');
     if (!section) return;
     var search = byId('fx-search');
@@ -640,29 +685,25 @@ function frontScript(): string {
       if (!rows[i].hidden) shown++;
     }
     var none = section.querySelector('[data-empty="search"]');
-    if (none) none.hidden = !(q && rows.length && !shown);
+    if (none) none.hidden = !(q && rows.length + works[1] && !(shown + works[0]));
   }
 
+  // 其他对话 (P37.17): the agent whose ⋯ opened the dialog, or all.
   function applyHistory() {
     var section = byId('fx-history');
     if (!section) return;
-    var search = byId('fx-search');
-    var q = search ? search.value.trim().toLowerCase() : '';
-    section.setAttribute('data-scope', q ? 'all' : state.scope);
+    var agent = othersFor || state.agent;
+    section.setAttribute('data-scope', state.scope);
     var toggles = section.querySelectorAll('[data-action="fx-scope"]');
     for (var t = 0; t < toggles.length; t++) {
       toggles[t].setAttribute('aria-pressed', toggles[t].getAttribute('data-scope') === state.scope ? 'true' : 'false');
     }
     var items = section.querySelectorAll('.fx-hitem');
-    var shown = 0;
     var mine = 0;
     for (var i = 0; i < items.length; i++) {
       var target = items[i].getAttribute('data-target');
-      if (target === state.agent) mine++;
-      var inScope = !!q || state.scope === 'all' || !state.agent || target === state.agent;
-      var matches = !q || items[i].textContent.toLowerCase().indexOf(q) >= 0;
-      items[i].hidden = !(inScope && matches);
-      if (!items[i].hidden) shown++;
+      if (target === agent) mine++;
+      items[i].hidden = !(state.scope === 'all' || !agent || target === agent);
     }
     var groups = section.querySelectorAll('.fx-hgroup');
     for (var g = 0; g < groups.length; g++) {
@@ -673,8 +714,7 @@ function frontScript(): string {
       if (line) line.hidden = !on;
     };
     empty('all', items.length === 0);
-    empty('search', !!q && items.length > 0 && shown === 0);
-    empty('agent', !q && state.scope === 'agent' && items.length > 0 && mine === 0 && !!state.agent);
+    empty('agent', state.scope === 'agent' && items.length > 0 && mine === 0 && !!agent);
   }
 
   function announce() {
@@ -829,13 +869,9 @@ function frontScript(): string {
 
   function setAddress(replace) {
     if (carded()) return;
-    var url = state.active
-      ? HOME + '?session=' + encodeURIComponent(state.active)
-      : state.agent && state.agent !== mainAgent
-        ? HOME + '?agent=' + encodeURIComponent(state.agent)
-        : HOME;
+    var url = HOME + addressQuery();
     try {
-      var entry = { active: state.active, agent: state.agent };
+      var entry = { active: state.resident ? '' : state.active, agent: state.agent, work: state.work && !state.active };
       if (window.location.pathname + window.location.search === url) history.replaceState(entry, '', url);
       else if (replace) history.replaceState(entry, '', url);
       else history.pushState(entry, '', url);
@@ -859,7 +895,7 @@ function frontScript(): string {
       if (main) main.inert = true;
       if (!was) {
         drawerOpener = document.activeElement;
-        var first = document.querySelector('#fx-side .fx-new');
+        var first = document.querySelector('#fx-side .fx-agent') || byId('fx-search');
         if (first) first.focus();
       }
     } else {
@@ -932,48 +968,69 @@ function frontScript(): string {
     });
   }
 
+  // An agent: the server answers with the reader's one conversation with it,
+  // or its welcome before the first line (P37.17).
   function selectAgent(address) {
     setDrawer(false);
     closeMenus();
+    closeOthers();
     if (!address) return;
+    if (address === state.agent && state.resident && !switching && showsState()) { focusBox(); return; }
     state.active = '';
+    state.resident = false;
+    state.work = false;
     state.agent = address;
     setAddress(false);
-    go(false);
+    go(true);
   }
 
-  // A row opens its agent's latest conversation, the way a chat app opens a
-  // contact: the agent reads as one running thread. An agent with none
-  // opens on its welcome.
+  // A row opens its agent's conversation, the way a chat app opens a
+  // contact: the agent reads as one running thread.
   function pickAgent(el) {
-    var address = el.getAttribute('data-address') || '';
-    var row = el.closest ? el.closest('.fx-agent-row') : null;
-    var latest = row ? row.getAttribute('data-latest') || '' : '';
-    if (!latest) { selectAgent(address); return; }
-    state.agent = address;
-    openSession(latest);
+    selectAgent(el.getAttribute('data-address') || '');
   }
 
   function openSession(id) {
     setDrawer(false);
     closeMenus();
+    closeOthers();
     if (!id) return;
     if (id === state.active && !switching && showsState()) { focusBox(); return; }
     state.active = id;
+    state.resident = false;
+    state.work = false;
     setAddress(false);
     go(true);
   }
 
-  // 新对话: on / a new conversation with the agent in focus; on /app with
-  // the main agent, the picker's default.
-  function newChat() {
+  // ⌘N (⌘⇧O in a browser) and the side's row: 开始一项工作 (P37.17 B), the
+  // main agent doing it until somebody picks another under 由谁来做.
+  function newWork() {
     if (CHATLESS) return;
     setDrawer(false);
     closeMenus();
+    closeOthers();
+    if (state.work && !state.active && !switching && showsState()) { focusBox(); return; }
     state.active = '';
-    if (CHAT && mainAgent) state.agent = mainAgent;
+    state.resident = false;
+    state.work = true;
+    state.agent = mainAgent || state.agent;
     setAddress(false);
     go(false);
+  }
+
+  // ⋯ 其他对话: the dialog of an agent's other conversations, which open
+  // read-only.
+  function openOthers(address) {
+    closeMenus();
+    othersFor = address || state.agent;
+    state.scope = 'agent';
+    applyHistory();
+    qc.openDialog('fx-others');
+  }
+  function closeOthers() {
+    var box = byId('fx-others');
+    if (box && box.open) box.close();
   }
 
   window.addEventListener('popstate', function (event) {
@@ -981,21 +1038,25 @@ function frontScript(): string {
     // The settings card's own moves (assets/nav.ts): the conversation under
     // the card did not change.
     if (CHATLESS || window.location.pathname.indexOf('/admin') === 0 || (entry && entry.qianmoNav)) return;
-    if (entry && (entry.active || '') === state.active && (entry.agent || state.agent) === state.agent) return;
+    if (entry && (entry.active || '') === (state.resident ? '' : state.active) && (entry.agent || state.agent) === state.agent &&
+      !!entry.work === (state.work && !state.active)) return;
     if (!entry) {
       var params = new URLSearchParams(window.location.search);
-      entry = { active: params.get('session') || '', agent: params.get('agent') || mainAgent };
+      entry = { active: params.get('session') || '', agent: params.get('agent') || mainAgent, work: params.get('work') === 'new' };
     }
     state.active = entry.active || '';
+    state.resident = false;
+    state.work = !state.active && !!entry.work;
     state.agent = entry.agent || state.agent;
-    go(!!state.active);
+    go(!state.work);
   });
 
   /* ---------------- sending ---------------- */
 
   // The session a send goes to, decided when the send starts: the open one,
-  // or a new one with the agent shown. A session opened for a send that the
-  // person has since moved away from becomes theirs in the list, not the
+  // or the agent's own conversation with the reader (P37.17) - the one they
+  // have, which another tab may just have opened, or a new one. A session
+  // the person has since moved away from is still the agent's row, not the
   // conversation on screen.
   function ensureSession(pin) {
     if (pin.active) return Promise.resolve({ id: pin.active, fresh: false });
@@ -1005,9 +1066,40 @@ function frontScript(): string {
       var id = String(data.id);
       if (pin.nav === nav) {
         state.active = id;
-        setAddress(false);
+        state.resident = true;
+        setAddress(true);
       }
       return { id: id, fresh: true };
+    });
+  }
+
+  // 开始一项工作's first line (P37.17 B): one request opens the work session
+  // and sends the line in it, with the workflow and - when somebody else was
+  // picked under 由谁来做 - the agent. Opened with the line refused, the
+  // session is still the conversation from here on.
+  function openWork(pin, text, flow) {
+    var body = { text: text };
+    if (flow) body.workflow = flow;
+    if (pin.agent && pin.agent !== mainAgent) body.agent = pin.agent;
+    var adopt = function (id) {
+      if (pin.nav !== nav) return;
+      state.active = id;
+      state.work = false;
+      state.resident = false;
+      setAddress(true);
+    };
+    return qc.sendJson('POST', ROUTES.work, body).then(function (data) {
+      var id = data && data.session && data.session.id ? String(data.session.id) : '';
+      if (!id) throw { human: tx('noSession', '没能开出会话') };
+      adopt(id);
+      return { id: id, fresh: true };
+    }, function (err) {
+      var session = err && err.data && err.data.session;
+      if (session && session.id) {
+        adopt(String(session.id));
+        err.opened = { id: String(session.id), fresh: true };
+      }
+      throw err;
     });
   }
 
@@ -1105,28 +1197,43 @@ function frontScript(): string {
       return;
     }
     var thread = byId('fx-thread');
-    var ready = !!thread && (thread.getAttribute('data-open') === '1' || thread.getAttribute('data-start') === '1');
+    var ready = !!thread && thread.getAttribute('data-readonly') !== '1' &&
+      (thread.getAttribute('data-open') === '1' || thread.getAttribute('data-start') === '1');
     if (!ready) { say(status, tx('unavailable', '暂不可对话'), 'bad'); return; }
-    var pin = { nav: nav, agent: state.agent, active: state.active };
+    var pin = { nav: nav, agent: state.agent, active: state.active, work: state.work && !state.active };
     var welcome = !pin.active;
+    // The workflow goes with this line only, and never with a local command
+    // (work-tasks.md §2.2).
+    var flow = state.flow && !localCommand(text) ? state.flow : '';
     hideCommands();
     stopVoice();
     state.busy = true;
     if (form) form.setAttribute('aria-busy', 'true');
     var kept = box.value;
+    var keptFlow = state.flow;
     if (typeof given !== 'string') box.value = '';
     autosize();
+    if (flow) setFlow('');
     var ghost = paintSending(text);
     say(status, '', 'muted');
     play([['thinking', 0]]);
     var opened = null;
     var sent = false;
-    ensureSession(pin).then(function (session) {
-      opened = session;
-      return qc.sendJson('POST', ROUTES.create + '/' + encodeURIComponent(session.id) + '/messages', { text: text });
-    }).then(function () {
+    var going = pin.work
+      ? openWork(pin, text, flow).then(function (session) { opened = session; })
+      : ensureSession(pin).then(function (session) {
+        opened = session;
+        var body = { text: text };
+        if (flow) body.workflow = flow;
+        return qc.sendJson('POST', ROUTES.create + '/' + encodeURIComponent(session.id) + '/messages', body);
+      });
+    going.then(function () {
       sent = true;
     }, function (err) {
+      // A work that opened and whose first line did not go (work-tasks.md
+      // §1.2): its session is the conversation now.
+      if (err && err.opened) opened = err.opened;
+      if (pin.nav === nav && flow && !state.flow) setFlow(keptFlow);
       // The send itself failed. In a conversation that was already open the
       // line stays where it was, marked 未送达 with 重试 (P37.13, 先改后同步).
       // On a welcome the line replaced, the welcome is drawn again and the
@@ -1206,13 +1313,23 @@ function frontScript(): string {
     if (!list || !box || box.disabled) return;
     if (!list.hidden) { hideCommands(); box.focus(); return; }
     var all = list.querySelectorAll('.fx-cmd');
-    for (var i = 0; i < all.length; i++) { all[i].hidden = false; all[i].setAttribute('aria-selected', 'false'); }
-    list.hidden = !all.length;
-    picked = all.length ? 0 : -1;
+    var count = 0;
+    for (var i = 0; i < all.length; i++) {
+      all[i].hidden = !offered(all[i]);
+      all[i].setAttribute('aria-selected', 'false');
+      if (!all[i].hidden) count++;
+    }
+    list.hidden = !count;
+    picked = count ? 0 : -1;
     markPicked();
     var plus = byId('fx-plus');
-    if (plus) plus.setAttribute('aria-expanded', all.length ? 'true' : 'false');
+    if (plus) plus.setAttribute('aria-expanded', count ? 'true' : 'false');
     box.focus();
+  }
+  // A row the composer may offer now: on the new work page there is no
+  // conversation yet, so only the workflows (P37.17 B).
+  function offered(row) {
+    return !state.work || state.active || row.classList.contains('fx-cmd-flow');
   }
   function showCommands(box) {
     var list = byId('fx-cmds');
@@ -1222,7 +1339,8 @@ function frontScript(): string {
     var all = list.querySelectorAll('.fx-cmd');
     var any = false;
     for (var i = 0; i < all.length; i++) {
-      var match = (all[i].getAttribute('data-cmd') || '').indexOf(value) === 0;
+      var match = offered(all[i]) && ((all[i].getAttribute('data-cmd') || '').indexOf(value) === 0 ||
+        (all[i].getAttribute('data-alt') || '').indexOf(value) === 0);
       all[i].hidden = !match;
       all[i].setAttribute('aria-selected', 'false');
       if (match) any = true;
@@ -1291,10 +1409,55 @@ function frontScript(): string {
   function useCommand(row) {
     var box = byId('fx-text');
     if (!box || !row) return;
-    box.value = (row.getAttribute('data-cmd') || '') + ' ';
+    var flow = row.getAttribute('data-flow');
+    // A workflow is not typed: it becomes the chip, and what was typed to
+    // find it goes.
+    if (flow) {
+      if (box.value.charAt(0) === '/' && !/\\s/.test(box.value)) box.value = '';
+      setFlow(flow);
+    } else box.value = (row.getAttribute('data-cmd') || '') + ' ';
     hideCommands();
     autosize();
     box.focus();
+  }
+
+  // Whether a line is one of the console's local commands (/compact and
+  // the rest), which never go with a workflow.
+  function localCommand(text) {
+    var match = /^\\/([a-z-]+)/.exec(text);
+    return !!match && !!document.querySelector('#fx-cmds .fx-cmd:not(.fx-cmd-flow)[data-cmd="/' + match[1] + '"]');
+  }
+
+  /* ---------------- the workflow (P37.17 B) ---------------- */
+
+  // The chip in the composer says which workflow the next line goes with;
+  // the new work page's cards and the / menu set it, its x clears it.
+  function setFlow(id) {
+    state.flow = id && document.querySelector('#fx-cmds [data-flow="' + id + '"]') ? id : '';
+    paintFlow();
+  }
+  function paintFlow() {
+    var chip = byId('fx-flow-chip');
+    var flow = state.flow;
+    if (chip) {
+      chip.hidden = !flow;
+      chip.setAttribute('data-flow', flow);
+      var option = flow ? document.querySelector('#fx-cmds [data-flow="' + flow + '"]') : null;
+      var name = byId('fx-flow-chip-name');
+      var said = option ? option.querySelector('span') : null;
+      if (name) name.textContent = said ? said.textContent : '';
+      var mark = byId('fx-flow-chip-mark');
+      var glyph = option ? option.querySelector('svg') : null;
+      if (mark && (!glyph || !mark.firstChild || mark.getAttribute('data-flow') !== flow)) {
+        while (mark.firstChild) mark.removeChild(mark.firstChild);
+        if (glyph) mark.appendChild(glyph.cloneNode(true));
+        mark.setAttribute('data-flow', flow);
+      }
+    }
+    var cards = document.querySelectorAll('#fx-thread .fx-flow[data-workflow]');
+    for (var i = 0; i < cards.length; i++) {
+      cards[i].setAttribute('aria-pressed', cards[i].getAttribute('data-workflow') === flow ? 'true' : 'false');
+    }
   }
 
   /* ---------------- the jump button ---------------- */
@@ -1364,9 +1527,15 @@ function frontScript(): string {
   });
 
   qc.onAction('fx-agent', function (el) { pickAgent(el); });
-  qc.onAction('fx-agent-new', function (el) { selectAgent(el.getAttribute('data-address') || ''); });
+  qc.onAction('fx-new-work', function () { newWork(); });
+  qc.onAction('fx-flow', function (el) {
+    var id = el.getAttribute('data-workflow') || '';
+    setFlow(state.flow === id ? '' : id);
+    focusBox();
+  });
+  qc.onAction('fx-flow-clear', function () { setFlow(''); focusBox(); });
+  qc.onAction('fx-others', function (el) { openOthers(el.getAttribute('data-address') || ''); });
   qc.onAction('fx-open', function (el) { openSession(el.getAttribute('data-session') || ''); });
-  qc.onAction('fx-new', function () { newChat(); });
   qc.onAction('fx-plus', function () { toggleCommands(); });
   qc.onAction('fx-mic', function () { startVoice(); });
   qc.onAction('fx-jump', function () {
@@ -1533,14 +1702,14 @@ function frontScript(): string {
     }
     if ((event.ctrlKey || event.metaKey) && event.shiftKey && (event.key === 'O' || event.key === 'o')) {
       event.preventDefault();
-      newChat();
+      newWork();
       return;
     }
     // The front's shortcuts (qmo-app.md §4.4), ⌘ on a Mac and Ctrl elsewhere;
     // an open dialog keeps the keys.
     if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.isComposing && !document.querySelector('dialog[open]')) {
       var key = String(event.key || '').toLowerCase();
-      if (!event.shiftKey && key === 'n') { event.preventDefault(); newChat(); return; }
+      if (!event.shiftKey && key === 'n') { event.preventDefault(); newWork(); return; }
       if (!event.shiftKey && key === 'k') { event.preventDefault(); focusSearch(); return; }
       if (event.shiftKey && key === 's') { event.preventDefault(); toggleSide(); return; }
       if (!event.shiftKey && (key === '.' || event.code === 'Period')) {
@@ -1563,7 +1732,7 @@ function frontScript(): string {
     var target = event.target;
     if (!target) return;
     if (target.id === 'fx-text') { if (voice) stopVoice(); autosize(); typing(target); showCommands(target); }
-    else if (target.id === 'fx-search') { applyAgents(); applyHistory(); }
+    else if (target.id === 'fx-search') applyAgents();
   });
 
   document.addEventListener('visibilitychange', function () {
@@ -1580,6 +1749,8 @@ function frontScript(): string {
     var thread = byId('fx-thread');
     state.active = (thread && thread.getAttribute('data-session')) || '';
     state.agent = (thread && thread.getAttribute('data-target')) || '';
+    state.resident = !!thread && thread.getAttribute('data-resident') === '1';
+    state.work = !state.active && !!thread && thread.getAttribute('data-new-work') === '1';
     var mainRow = document.querySelector('#fx-agents .fx-agent-main');
     var mainPick = document.querySelector('#fx-agent-menu [data-main]');
     mainAgent = mainRow ? mainRow.getAttribute('data-address') || ''
@@ -1591,7 +1762,7 @@ function frontScript(): string {
     // the entry is the card's (assets/nav.ts).
     if (!carded()) {
       try {
-        history.replaceState({ active: state.active, agent: state.agent }, '', window.location.pathname + window.location.search);
+        history.replaceState({ active: state.resident ? '' : state.active, agent: state.agent, work: state.work }, '', window.location.pathname + window.location.search);
       } catch (e) { /* cosmetic */ }
     }
     var mic = byId('fx-mic');
@@ -1621,9 +1792,16 @@ function frontScript(): string {
       send(text);
       model.at = 0;
     },
-    // /app's agent picker (frontTools.ts): the agent a new conversation goes to.
+    // The agent picker (frontTools.ts): the agent a new conversation goes to
+    // on /app; on the new work page, who does it - the page stays.
     pickAgent: function (address) {
       if (!address) return;
+      if (state.work && !state.active) {
+        state.agent = address;
+        paintPicker();
+        focusBox();
+        return;
+      }
       if (state.active || address !== state.agent) selectAgent(address);
       else paintPicker();
     }

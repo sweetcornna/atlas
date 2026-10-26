@@ -591,6 +591,12 @@ export interface ChatSession {
   readonly running?: true
   /** 后台子智能体的会话（P29）：中枢替任务主人开的，不是人开的对话。 */
   readonly background?: true
+  /**
+   * 常驻会话（P37.17）：一个人跟一个智能体的那一条对话，经
+   * `POST /v0/chat/sessions` 开出时写一次，之后不变。是谁的看账本里的属主
+   * （`chatResident.ts`）。定时任务、渠道、智能体互问、后台任务开的会话从不带它。
+   */
+  readonly resident?: true
   /** 工作会话（P37.17 B，work-tasks.md §1.1）：经 `POST /v0/work/sessions` 开出。 */
   readonly work?: true
   /** 开这条工作会话时选的工作流；没选时不出现。 */
@@ -599,6 +605,8 @@ export interface ChatSession {
 
 /** {@link ChatPort.open} 的选项（work-tasks.md §1.1）。 */
 export interface ChatOpenOptions {
+  /** 这是常驻会话（{@link ChatSession.resident}）：写进会话记录，一次。 */
+  readonly resident?: true
   readonly work?: true
   /** 只在 `work` 为真时接受。 */
   readonly workflow?: WorkflowId
@@ -686,7 +694,11 @@ export interface ChatPort {
   /** 能聊的对象。注册中心挂了就是一个失败值，不抛。 */
   targets(): Promise<ConsoleResult<readonly ChatTarget[]>>
   sessions(): Promise<ConsoleResult<readonly ChatSession[]>>
-  /** 开一条新会话。同一个目标可以有多条——它们是不同的话题，不是重复。 */
+  /**
+   * 开一条新会话。同一个目标可以有多条：定时任务、渠道、后台任务各开各的；人跟
+   * 一个智能体的那一条是常驻会话，由路由先找已有的、没有才带 `resident` 来开
+   * （`chatResident.ts`）。端口自己不判断复用。
+   */
   open(
     target: string,
     options?: ChatOpenOptions,
@@ -1348,6 +1360,7 @@ export const CONSOLE_ACTIONS = [
    * 默认档案。target 是节点名；同一请求里还有端口记的那条 `provider.apply`。
    */
   'server.replicate.models',
+  /** 开出一条会话；答的是已有的常驻会话（P37.17）时什么都没开，不记。 */
   'chat.session.open',
   'chat.message.send',
   /** 本地命令（P18.20）：取代那一句的 `chat.message.send`，target 是会话 id。 */
@@ -1357,7 +1370,10 @@ export const CONSOLE_ACTIONS = [
   'chat.command.model',
   'chat.command.thinking',
   'chat.command.effort',
-  /** 明确打开一份转录：整页带 `?session=`、JSON 读转录、片段带 `?open=1`。轮询与 SSE 不算。 */
+  /**
+   * 明确打开一份转录：整页带 `?session=`、`/` 与 `/app` 打开主智能体或 `?agent=` 那个智能体的常驻
+   * 会话（P37.17）、JSON 读转录、片段带 `?open=1`。轮询与 SSE 不算。
+   */
   'chat.transcript.open',
   /** 主智能体（初始化配置页），target 是地址或 `default`（清除）。 */
   'chat.main',
