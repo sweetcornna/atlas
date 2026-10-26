@@ -30,6 +30,15 @@ const ZOOM_RESET: &str = "zoom-reset";
 const ZOOM_IN: &str = "zoom-in";
 const ZOOM_OUT: &str = "zoom-out";
 const OPEN_HUB: &str = "open-hub";
+/// The page's side list and panes (qmo-app.md §11.5), each its fixed script.
+const PAGE: [(&str, shell::PageMenu); 6] = [
+    ("page-side", shell::PageMenu::Side),
+    ("pane-right", shell::PageMenu::Right),
+    ("pane-below", shell::PageMenu::Below),
+    ("pane-next", shell::PageMenu::Next),
+    ("pane-prev", shell::PageMenu::Prev),
+    ("pane-close", shell::PageMenu::Close),
+];
 
 /// What each of the shell's menu items does, from the menu bar or the tray.
 pub fn on_menu(app: &AppHandle, event: MenuEvent) {
@@ -48,7 +57,11 @@ pub fn on_menu(app: &AppHandle, event: MenuEvent) {
         ZOOM_IN => shell::zoom(app, Some(true)),
         ZOOM_OUT => shell::zoom(app, Some(false)),
         OPEN_HUB => shell::open_hub_in_browser(app),
-        _ => {}
+        id => {
+            if let Some((_, action)) = PAGE.iter().find(|(one, _)| *one == id) {
+                shell::page_menu(app, *action);
+            }
+        }
     }
 }
 
@@ -96,8 +109,20 @@ pub fn app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         .paste()
         .select_all()
         .build()?;
+    // The page takes these keys first and keeps them (WebKit's key
+    // equivalents go to the page before the menu); a click here is the same
+    // call (qmo-app.md §11.5).
+    let [side, right, below, next, prev, close] = PAGE.map(|(id, _)| id);
     let view = SubmenuBuilder::new(app, t.view)
         .item(&item(app, RELOAD, t.reload, Some("CmdOrCtrl+R"))?)
+        .separator()
+        .item(&item(app, side, t.toggle_side, Some("CmdOrCtrl+B"))?)
+        .separator()
+        .item(&item(app, right, t.pane_right, Some("Ctrl+Cmd+Backslash"))?)
+        .item(&item(app, below, t.pane_below, Some("Ctrl+Cmd+Minus"))?)
+        .item(&item(app, next, t.pane_next, Some("Ctrl+BracketRight"))?)
+        .item(&item(app, prev, t.pane_prev, Some("Ctrl+BracketLeft"))?)
+        .item(&item(app, close, t.pane_close, Some("Ctrl+Cmd+W"))?)
         .separator()
         .item(&item(app, ZOOM_RESET, t.actual_size, Some("CmdOrCtrl+0"))?)
         .item(&item(app, ZOOM_IN, t.zoom_in, Some("CmdOrCtrl+="))?)

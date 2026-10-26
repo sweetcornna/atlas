@@ -1185,6 +1185,46 @@ pub fn sign_out(app: &AppHandle) -> SignOutReport {
 /// string: nothing is ever put into it.
 pub const OPEN_PAGE_SETTINGS: &str = "(window.__qmoOpenSettings||function(){window.__TAURI__.core.invoke('qmo_open_local_settings')})()";
 
+/// The View menu's side list and pane items (qmo-app.md §11.5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PageMenu {
+    Side,
+    Right,
+    Below,
+    Next,
+    Prev,
+    Close,
+}
+
+/// The fixed script each one runs in the hub's page: its `window.__qmoMenu`
+/// (`assets/frontSplit.ts`), one word from six, nothing put together.
+pub fn page_menu_script(action: PageMenu) -> &'static str {
+    match action {
+        PageMenu::Side => "window.__qmoMenu&&window.__qmoMenu('side')",
+        PageMenu::Right => "window.__qmoMenu&&window.__qmoMenu('right')",
+        PageMenu::Below => "window.__qmoMenu&&window.__qmoMenu('below')",
+        PageMenu::Next => "window.__qmoMenu&&window.__qmoMenu('next')",
+        PageMenu::Prev => "window.__qmoMenu&&window.__qmoMenu('prev')",
+        PageMenu::Close => "window.__qmoMenu&&window.__qmoMenu('close')",
+    }
+}
+
+/// A View menu item clicked: to the main window's page when it is the hub's
+/// (as Settings… is), nothing otherwise. No command of the shell's is added.
+pub fn page_menu(app: &AppHandle, action: PageMenu) {
+    let s = shell(app);
+    let Some(window) = app.get_webview_window(MAIN) else {
+        return;
+    };
+    let page = window.url().ok();
+    if !settings_in_page(page.as_ref(), s.hub().as_ref(), s.phase()) {
+        return;
+    }
+    if let Err(e) = window.eval(page_menu_script(action)) {
+        eprintln!("qmo: page menu: {e}");
+    }
+}
+
 /// Whether the menu's Settings goes to the page: the main window shows a page
 /// of the hub the shell is signed in to. On a local page (sign-in, offline,
 /// the skeleton), `about:blank` or with no main window, it is the shell's own
@@ -1651,6 +1691,26 @@ mod tests {
         );
         // Its fallback is a command the hub's page may call.
         assert!(HUB_COMMANDS.contains(&"qmo_open_local_settings"));
+    }
+
+    #[test]
+    fn the_page_menu_scripts_are_six_fixed_ones_and_call_no_command() {
+        let all = [
+            (PageMenu::Side, "side"),
+            (PageMenu::Right, "right"),
+            (PageMenu::Below, "below"),
+            (PageMenu::Next, "next"),
+            (PageMenu::Prev, "prev"),
+            (PageMenu::Close, "close"),
+        ];
+        for (action, word) in all {
+            assert_eq!(
+                page_menu_script(action),
+                format!("window.__qmoMenu&&window.__qmoMenu('{word}')"),
+                "{action:?}"
+            );
+            assert!(!page_menu_script(action).contains("__TAURI__"));
+        }
     }
 
     #[test]
