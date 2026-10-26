@@ -11,6 +11,7 @@
  * | `folders.json` | the folders picked, newest first, at most 20 |
  * | `sessions/<id>/session.json` | a session's header |
  * | `sessions/<id>/events.ndjson` | its conversation, append-only |
+ * | `sessions/<id>/turn-diff.json` | the agent's last turn diff (Codex), for the panel outside Git |
  * | `runner.lock`, `children.json` | the runner's own (serve.ts) |
  *
  * `events.ndjson` has the hub console's chat-store envelope
@@ -29,6 +30,7 @@ import {
   writePrivateFile,
 } from '../secret.js'
 import { isMode, type Mode } from './modes.js'
+import type { KeptTurnDiff } from './turnDiff.js'
 import {
   type CodeRecord,
   type CodeTurn,
@@ -46,6 +48,8 @@ export const MAX_MESSAGE_BYTES = 256 * 1024
 export const MAX_DETAIL_BYTES = 16 * 1024
 /** A conversation this large takes no more lines; a new session is the way on. */
 export const MAX_LOG_BYTES = 64 * 1024 * 1024
+/** A turn diff is kept up to this, cut at a line. */
+const MAX_TURN_DIFF_BYTES = 1024 * 1024
 
 export interface StoredFolder {
   readonly id: string
@@ -78,7 +82,15 @@ export interface SessionHeader {
     readonly id: string
     readonly started: boolean
   }
-  readonly remote: { readonly on: false; readonly pushedSeq: number }
+  /**
+   * Remote (§5): on or off, how far the hub has acknowledged, and the device
+   * id it was turned on under (a later pairing does not inherit it).
+   */
+  readonly remote: {
+    readonly on: boolean
+    readonly pushedSeq: number
+    readonly device?: string
+  }
 }
 
 /** The `session` line, the chat store's `StoredChatSession`. */
@@ -226,11 +238,19 @@ function headerOf(value: unknown): SessionHeader | undefined {
     lastSeq: value.lastSeq,
     native: { kind: native.kind, id: native.id, started: native.started },
     remote: {
-      on: false,
+      on: isRecord(remote) && remote.on === true,
       pushedSeq:
-        isRecord(remote) && typeof remote.pushedSeq === 'number'
+        isRecord(remote) &&
+        typeof remote.pushedSeq === 'number' &&
+        Number.isSafeInteger(remote.pushedSeq) &&
+        remote.pushedSeq >= 0
           ? remote.pushedSeq
           : 0,
+      ...(isRecord(remote) &&
+      typeof remote.device === 'string' &&
+      /^d-[a-z2-7]{12}$/.test(remote.device)
+        ? { device: remote.device }
+        : {}),
     },
   }
 }
@@ -348,6 +368,42 @@ export class CodeStore {
         path.join(this.sessionDir(id), 'session.json'),
       )
       return raw === undefined ? undefined : headerOf(JSON.parse(raw))
+    } catch {
+      return undefined
+    }
+  }
+
+  /** The agent's last turn diff, kept as it reported it (at most 1 MiB). */
+  writeTurnDiff(id: string, diff: string, at: number): void {
+    let kept = diff
+    if (Buffer.byteLength(kept) > MAX_TURN_DIFF_BYTES) {
+      kept = headBytes(kept, MAX_TURN_DIFF_BYTES)
+      kept = kept.slice(0, kept.lastIndexOf('\n') + 1)
+    }
+    writePrivateFile(
+      path.join(this.sessionDir(id), 'turn-diff.json'),
+      `${JSON.stringify({ v: 1, at, truncated: kept !== diff, diff: kept })}\n`,
+    )
+  }
+
+  readTurnDiff(id: string): KeptTurnDiff | undefined {
+    try {
+      const raw = readPrivateFile(
+        path.join(this.sessionDir(id), 'turn-diff.json'),
+      )
+      const value: unknown = raw === undefined ? undefined : JSON.parse(raw)
+      if (
+        !isRecord(value) ||
+        typeof value.at !== 'number' ||
+        typeof value.diff !== 'string' ||
+        typeof value.truncated !== 'boolean'
+      )
+        return undefined
+      return {
+        at: value.at,
+        diff: value.diff,
+        truncated: value.truncated,
+      }
     } catch {
       return undefined
     }

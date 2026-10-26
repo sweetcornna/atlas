@@ -178,11 +178,18 @@ type ConsoleErrorCode =
   | 'unavailable'
   | 'limit'
   | 'subscription_required'
-  | 'E_SENDER_MISMATCH'
   /** The `qmo` client's device door (`clientDoor.ts`). */
   | 'device_revoked'
   | 'owner_inactive'
   | 'device_kind'
+  /** The device link and the Remote copies (`codeLink.ts`, `routes/codeApi.ts`). */
+  | 'upgrade_required'
+  | 'offline'
+  | 'timeout'
+  | 'remote_off'
+  | 'remote_on'
+  /** A runner's own refusal, passed on as it gave it (`E_BUSY`, …). */
+  | `E_${string}`
 
 export function json(
   body: unknown,

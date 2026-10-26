@@ -513,7 +513,14 @@ export async function renderCode(
       admin: mayAdmin(ctx),
       faces: chatFaces(await lookFaces(ctx)([])),
       lang,
-      code: { desktop },
+      code: {
+        desktop,
+        // Remote's copies (P37.15): a personal account, on a hub that keeps them.
+        remote:
+          ctx.deps.codeLinks !== undefined &&
+          ctx.access.principal?.kind === 'user' &&
+          !ctx.access.breakGlass,
+      },
       workHome: desktop ? '/app' : '/',
     },
     200,

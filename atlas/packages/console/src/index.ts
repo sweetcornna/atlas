@@ -330,3 +330,20 @@ export type { HandoffGitPort, HandoffRequestActor } from './deps.js'
 export * from './routes/filesApi.js'
 // 添加服务器：每一步的名字与说法，宿主的执行器用同一组（`qm replicate run`）。
 export { REPLICATE_STEPS } from './view/replicate.js'
+// 本机会话的 Remote 副本（P37.15，`qmo-local.md` §5.3）：中枢存副本的端口与它要的检查。
+export {
+  CODE_ACCOUNT_MAX_BYTES,
+  CODE_ACCOUNT_MAX_COPIES,
+  CODE_COPY_MAX_BYTES,
+  CODE_LINK_MAX_FRAME,
+  CODE_LINK_PATH,
+  CODE_LINK_PROTOCOL,
+  type CodeCopiesPort,
+  type CodeCopy,
+  type CodeCopyHeader,
+  type CodeCopyPage,
+  type CodeCopyRecord,
+  codeHeaderOf,
+  codeOwnerKey,
+  codeRecordOf,
+} from './codeRemote.js'

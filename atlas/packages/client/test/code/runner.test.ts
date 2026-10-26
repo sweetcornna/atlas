@@ -60,15 +60,16 @@ describe.skipIf(!posix)('the runner', () => {
       version: expect.any(String),
       protocol: 1,
       features: {
-        protocols: ['claude-stream'],
+        protocols: ['claude-stream', 'codex-app-server'],
         worktree: false,
-        remote: false,
+        remote: true,
       },
       codeDir: at.code,
     })
     expect(await refused(r.call('hello', { extra: 1 }))).toBe('E_ARGS')
     expect(await refused(r.call('nonsense'))).toBe('E_ARGS')
     expect(await refused(r.call('session.rename', {}))).toBe('E_ARGS')
+    // Remote needs this computer signed in to a hub (`remote.test.ts`).
     expect(
       await refused(
         r.call('session.remote', {
@@ -241,12 +242,11 @@ describe.skipIf(!posix)('the runner', () => {
     expect(
       await refused(r.call('session.start', { ...base, worktree: true })),
     ).toBe('E_ARGS')
+    // Signed out: no Remote (`remote.test.ts` has it signed in).
     expect(
       await refused(r.call('session.start', { ...base, remote: true })),
     ).toBe('E_REMOTE')
-    expect(
-      await refused(r.call('session.start', { ...base, agent: 'codex' })),
-    ).toBe('E_AGENT')
+    // Codex is driven since P37.14b (`codex.test.ts`); an agent not found is not.
     expect(
       await refused(r.call('session.start', { ...base, agent: 'gemini' })),
     ).toBe('E_AGENT')
