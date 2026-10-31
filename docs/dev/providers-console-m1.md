@@ -5,7 +5,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v1.7（生效）**。v1.7 回写 P18.13 收口：§5.11.8 补缓存窗口的结果（G-2 通过，G-1、G-3 未过，P18.19 的现网门槛转入跟进），§5.11.11 第 3、9 条改为已实测，§6.3.3 与 §9.2 补 P18.18 的两处实现差异。v1.6 回写 P18.13 B 段的真机验收结果：§8.4 补结果与在途 turn 的时长要求，§3.1 `evaluated` 一行补「已评估」的显示，§8.3 补明文持有点。v1.5 只补 §2.4 `effective` 一行：未托管且 resident 带着模型变量启动的节点不报生效值。v1.4 补了 §2.3 第 10 步与 §2.5 的拨号节奏（随 v2.47.2 实现）。负责人决定来自 2026-10-03 对话记录（§0.1 的 D-1 ~ D-9），其余裁定由主 agent 按 M1 委托作出（§1.2）。v1.0 的四个待决点负责人已于同日拍板，见 §13。§5.11（缓存命中，P18.19）是 v1.3 新增的，其中的行号在 `6d4440e8` 上核过 |
+| 文档版本 | **v1.8（生效）**。v1.8 加 P18.21：§5.11.5 CH-8 客户端前缀自检，§5.11.8 的 G-1 改为按自检判、G-3 与 `--ttl-min` 对 GPT-5.6 及以后改为 30 min、窗口须含工作日和周末，§5.11.7 T-10，§5.11.13 实现与验证，§9.2 加 P18.21 一行。v1.7 回写 P18.13 收口：§5.11.8 补缓存窗口的结果（G-2 通过，G-1、G-3 未过，P18.19 的现网门槛转入跟进），§5.11.11 第 3、9 条改为已实测，§6.3.3 与 §9.2 补 P18.18 的两处实现差异。v1.6 回写 P18.13 B 段的真机验收结果：§8.4 补结果与在途 turn 的时长要求，§3.1 `evaluated` 一行补「已评估」的显示，§8.3 补明文持有点。v1.5 只补 §2.4 `effective` 一行：未托管且 resident 带着模型变量启动的节点不报生效值。v1.4 补了 §2.3 第 10 步与 §2.5 的拨号节奏（随 v2.47.2 实现）。负责人决定来自 2026-10-03 对话记录（§0.1 的 D-1 ~ D-9），其余裁定由主 agent 按 M1 委托作出（§1.2）。v1.0 的四个待决点负责人已于同日拍板，见 §13。§5.11（缓存命中，P18.19）是 v1.3 新增的，其中的行号在 `6d4440e8` 上核过 |
 | 日期 | 2026-10-03 |
 | 核对基点 | origin/main `33dc81bf`（PR #154 的合入提交）。**本文自己引用的行号**都在这个提交上核过，清单见附 B。**从 hermes 调研 §11 转引的阡陌行号**按该调研的基线 `e123b2ec` 记，本文没有逐条在 `33dc81bf` 上复核 |
 | 本文范围 | **只有设计，不改代码。**范围回写与本版同批完成，记为 P18.0：章程 v2.22、roadmap v2.80、`beta-env.md` v1.4 补注、`node-provisioning.md` 补注、`tenancy-m1.md` §6.1 补注 |
@@ -19,6 +19,7 @@
 
 | 版本 | 日期 | 说明 |
 |---|---|---|
+| **v1.8** | **2026-10-07** | **P18.21：CH-8 客户端前缀自检，G-1、G-3 改判法。**网关不回厂商诊断，G-1 改为逐次看客户端自检：请求体在决定缓存复用的部分有没有变，变了的必须为 0，没变的记为供应方侧（§5.11.5、§5.11.8）。G-3 与 `--ttl-min` 对 GPT-5.6 及以后按厂商文档的 30 min 下限（原 60 min 来自周六实测）。现网收数须含工作日和周末两段。开关默认关闭，开与不开请求体都逐字节不变（T-10，§5.11.13） |
 | **v1.7** | **2026-10-07** | **实现回写：P18.13 收口（缓存窗口）。**§5.11.8 补「结果」：v2.47.2 上 38 h、380 次调用，G-2 第一次有样本并通过（7 次同构建替换后的首调用全部命中），G-1（35 次 UNEXPLAINED 没有诊断）与 G-3（0.883）未过；网关直测：`prompt_cache_options` 被收下但不回诊断，`24h` 已是缺省保留期，`prompt_cache_key` 按客户端的值分区。改前窗口在周末、改后在工作日，写进混杂因素。§5.11.11 第 3、9 条改为已实测。§6.3.3 补多 key 的「加一把密钥 / 删除」，§9.2 P18.18 一行注明 `retryClassification.ts` 实际没改（P18.18 审计转出） |
 | **v1.6** | **2026-10-05** | **实现回写：P18.13 B 段真机验收（AC-P6）。**v2.47.2 上两轮零红（§8.4 结果一条）；`custom-openai` 预设记为已评估，页面显示「已评估」（§3.1 `evaluated` 一行）；§8.4 补「在途 turn 要比拨号节奏长」；§8.3 补明文持有点（节点 `settings.json`、`pending.json`、`key-pool.json`，首次托管的备份只对真 key 算持有点） |
 | **v1.5** | **2026-10-05** | **实现回写：未托管节点的生效值。**P18.13 B 段 F 段发现：节点还没被托管、resident 又是带着 `secrets/model-env` 启动的时候，`status` 报的 `effective` 是 SSH 强制命令起的进程剥掉模型变量、只按 `settings.json` 算的，于是一台实际跑 gpt-6-luna / responses / max 的节点被报成 firstParty / claude-sonnet-5 / xhigh。§2.4 `effective` 一行补上：这种节点的节点侧不算，中枢不收旧节点照常发来的那一块，也不沿用缓存里的旧值；页面写「模型由 resident 的启动环境决定 · 托管后显示」 |
@@ -970,6 +971,21 @@ CH-n 是本包的改动编号，改法细节见 5.11.5；「不做」的理由�
 - **收益**：舰队上没有 Grok 节点，现网收益为零。这一项是为产品功能补齐。
 - **写法**：会话 id 由调用方传入。`claude.ts` 分派到 Grok 线时本来就持有会话 id，多传一个实参；`grok/index.ts` 加一个可选参数；`grokConversation.ts` 不导入任何模块。第一版让新模块自己导入 `bootstrap/state`，madge 多报一条只经类型导入闭合的 import 环；循环棘轮只能降、不能升，所以改成现在的写法，`check:cycles` 保持 443 / 2054。代价是多改一个基座文件（`claude.ts`，纯插入一行实参）。
 
+**CH-8 客户端前缀自检**（P18.21，v1.8 新增；默认关闭；基座纯插入）
+
+- **为什么**：G-1 原计划靠 CH-6 的厂商诊断说明每一次 UNEXPLAINED。网关直测（5.11.8 结果）表明，它收下 `prompt_cache_options`，却从不回 `prompt_cache_diagnostics`，这条路走不通。客户端自己能回答问题的一半：这次线上发出的请求，在决定缓存复用的部分里，相对同一会话上一次发出的请求有没有变。没变，零命中就发生在供应方那一侧。
+- **做什么**：设了 `OPENAI_PROMPT_CACHE_SELFCHECK=1` 时，每一个通用 `/responses` 请求在回复完成（`message_stop`）时，和同一车道上一次**完成**的请求比较。比较对象是线上发出的请求体本身：重试时取最后一次尝试，因为回复是它产出的。比较结果记在 assistant 消息上，随转录落盘：
+  `_qmPromptCacheSelfCheck: { v: 1, prev, changed, inputPrev, inputNow, divergedAt? }`
+  - `prev`：`none` 表示没有可比的；`memory` 表示本进程的上一次；`sidecar` 表示本进程接手会话之前的最后一次，包括子进程替换和部署。
+  - `changed`：理由词，顺序固定。尽量沿用 OpenAI 诊断的原词：`model_changed`、`prompt_cache_key_changed`、`service_tier_changed`、`tools_changed`（含 `parallel_tool_calls`）、`text_format_changed`、`reasoning_effort_changed`、`verbosity_changed`，另加 `instructions_changed`；`input` 用 `input_changed` 或 `context_compacted`。为空表示上一次请求在每个比较项上都是这一次的逐字节前缀。
+  - `inputPrev`、`inputNow`：两次请求的 `input` 项数。`divergedAt`：第一个不同项的下标。
+- **怎么比**：各比较项先做键序稳定的 JSON，再做 sha256，取前 16 位。`input` 逐项做滚动哈希（每项留 8 字节截断值，不留内容）。前 min(N, M) 项逐项比，第一处不同就是 `divergedAt`；全同而这一次更短，就在它结尾处分叉。不比 `tool_choice`、`include`、`store`、`stream`、`max_output_tokens`、`reasoning.summary`、`prompt_cache_retention`、`prompt_cache_options`。
+- **压缩**：这一次请求依据的消息里，如果找不到上一次请求的锚（它依据的最早一条 assistant 消息的 uuid），`input` 的分叉记 `context_compacted`，不记 `input_changed`。`/compact` 的 from 方向会保住最早的 assistant，这时会记成 `input_changed`。归因脚本先看转录里的压缩边界，不受这一点影响。
+- **车道**：照基座 `promptCacheBreakDetection.ts` 的 `getTrackingKey`。主循环（`repl_main_thread*`、`sdk*`）一条；子代理（`agent:custom|default|builtin*`）按 agent id 各一条；一次性 fork（压缩、会话记忆、建议等）不记。内存里最多留 128 条车道。
+- **跨进程**：只有主车道落盘，写到 `<projectDir>/<sessionId>/prompt-cache-selfcheck.json`，文件 0600、目录 0700，先写临时文件再改名。落不落盘沿用转录与 CH-1 的同一条规则（`sessionPromptContext.ts` 的 `persistenceDisabled`）。边车里只有各比较项的 16 位摘要、项数、截断链和锚的 uuid，不含任何正文、key 或模型名。路径在请求开始时定下，请求途中切换会话也不会写错地方。
+- **不记什么**：消息上只有计数、下标和理由词，没有哈希、内容、key 和模型名。**开与不开，请求体都逐字节不变**（金样用例逐字节核对）。失败的请求不更新车道，所以「上一次」总是上一次产出回复的请求。ChatGPT 订阅路由与 chat 线不记。
+- **写法**：阡陌自有的 `selfCheck.ts`。基座只插入两处：`responsesAdapter.ts` 加一个可选回调 `onRequestBody`，每次尝试把请求体交给它；`openai/index.ts` 在请求开始时 `beginPromptCacheSelfCheck`，在组装消息时把 `settle()` 的结果展开进 `providerMetadata`。
+
 **人时**
 
 | 项 | 人时 |
@@ -1020,6 +1036,7 @@ CH-n 是本包的改动编号，改法细节见 5.11.5；「不做」的理由�
 | T-7 | 诊断：①assistant 消息记下响应 id，并写进转录；②设了 `OPENAI_PROMPT_CACHE_DIAGNOSTICS=1` 时，第二个请求带 `prompt_cache_options.comparison_response_id`，值等于第一个响应的 id，首轮不带；③录制桩返回的 `prompt_cache_diagnostics` 被记到消息上；④录制桩拒收这个字段时，去掉字段并锁存；⑤不开时请求体和今天逐字节一致 | 红 | — |
 | T-8 | 转录：节点身份下 attachment 条目写进转录，续上时能读回。非节点身份下转录和今天一致（实现只加了一个按身份的判断，这一半用单元用例断言非节点身份下 `isLoggableMessage(attachment)` 仍为 false；没有跑「同一脚本、去掉 uuid 和时间戳逐字节比较」的版本） | 节点这一半是红的 | 去掉 CH-2 的判断就变红 |
 | T-9 | 进程 cwd 和会话 cwd 是两个不同的 git 仓库时，`instructions` 里的 Status 和 Recent commits 来自会话 cwd | 红（interleave-proccwd 已实测：今天读的是进程 cwd） | — |
+| T-10 | CH-8 自检（P18.21，v1.8）：①开关关闭时，请求体与 assistant 消息和基点 `cf57a8da` 逐字节一致；打开时，请求体仍一致，消息只多这一个字段（金样）。②正常续轮：`none`，之后是 `memory` 且 `changed` 为空，与录制桩看到的前缀关系一致。③改 instructions、改 effort、改工具表、改一条旧输入项、压缩，各报各的理由，`divergedAt` 与录制桩逐项比较的结果相同。④子代理单独一条车道，一次性 fork 不记，重试时比较的是产出回复的那次请求体。⑤真 ACP 子进程被替换后续上：记 `sidecar` 且没有变化；不留附件的反向对照记 `input_changed`，`divergedAt` 为 0。⑥边车 0600 / 0700，不含正文；子代理车道不落盘；别的会话的边车不读；关闭落盘时什么都不写 | 模块是新的，没有改前 | ③ 每条都有不变的孪生；⑤ 有反向对照 |
 
 #### 5.11.8 现网成功标准与测法
 
@@ -1028,15 +1045,21 @@ CH-n 是本包的改动编号，改法细节见 5.11.5；「不做」的理由�
 1. 部署一个包含 P18.19 的发行标签（D-7）。记下每个节点的部署时刻和之后所有的重启时刻。测量窗口内不换模型，也不换 effort。
 2. 窗口至少 24 h，三个节点的主循环调用合计至少 100 次；不够就延长窗口。
 3. 每个节点跑一遍 `cache-baseline.py <OCC_CONFIG_DIR> <部署时刻>`。
-4. 每个节点跑 `cache-zero-classify.py <OCC_CONFIG_DIR> <部署时刻> --deploy … --restart …`。`--deploy` 填换了构建、模型或 effort 的重启（部署、换 env），`--restart` 只填同一构建的替换（热切换、崩溃重拉、值守重启）。`--ttl-min` 用默认的 60（2026-10-03 实测网关保留至少 60 min）；某个节点换了模型或端点时，按节点另给。
+4. 每个节点跑 `cache-zero-classify.py <OCC_CONFIG_DIR> <部署时刻> --deploy … --restart …`。`--deploy` 填换了构建、模型或 effort 的重启（部署、换 env），`--restart` 只填同一构建的替换（热切换、崩溃重拉、值守重启）。`--ttl-min` 用默认的 60（2026-10-03 实测网关保留至少 60 min）；某个节点换了模型或端点时，按节点另给。**v1.8**：GPT-5.6 及以后的模型（舰队的 `gpt-6-luna` 按此处理）改用 30。依据是厂商文档写明前缀在最近一次写入或复用后「至少保留 30 min」；60 是 10-03（周六）的实测，工作日不成立（见结果）。
 5. 部署之前，先对基线窗口（09:57Z 之后）跑一遍第 4 步，作为同口径的「改之前」。09:57Z 和三次收口部署都填 `--deploy`。
-6. 建议一个节点开 `OPENAI_PROMPT_CACHE_DIAGNOSTICS=1`：G-1 的「诊断结果」靠它，归因脚本会在零命中那一行打出 `diag=<type>/<reason>`。luna 支不支持诊断、网关透不透传，未实测；开了以后看转录里有没有 `_openaiPromptCacheDiagnostics`。
+6. 建议一个节点开 `OPENAI_PROMPT_CACHE_DIAGNOSTICS=1`：G-1 的「诊断结果」靠它，归因脚本会在零命中那一行打出 `diag=<type>/<reason>`。luna 支不支持诊断、网关透不透传，未实测；开了以后看转录里有没有 `_openaiPromptCacheDiagnostics`。（v1.7 实测：这个网关不回诊断。）
+7. **v1.8**：三个节点都开 `OPENAI_PROMPT_CACHE_SELFCHECK=1`（CH-8）。归因脚本对每一次零命中读 `_qmPromptCacheSelfCheck`，在那一行打出 `self=<prev>/<changed>`。
+8. **v1.8**：窗口要同时包含工作日和周末，两段分开报。跟「改之前」对比时，只拿同一星期型的窗口相比（理由见结果里的混杂因素）。
 
 **门槛**（达不到就不算完成）
 
-- **G-1**：UNEXPLAINED 类的零命中要逐次归因。归到阡陌请求体变化的，必须为 0；其余每一次都要有诊断结果（CH-6 打开时）或网关日志作为说明。
+- **G-1**：UNEXPLAINED 类的零命中要逐次归因。归到阡陌请求体变化的，必须为 0；其余每一次都要有说明。**v1.8 判法**：逐次看 CH-8 的自检记录。
+  - `changed` 非空，说明阡陌的请求体变了，**必须为 0**。
+  - `changed` 为空，记为「供应方侧」，逐次列出，不算失败。
+  - 没有自检记录（开关没开、旧版本）的，仍是 UNEXPLAINED，G-1 不通过。
+  - CH-6 诊断或网关日志是可选的旁证。v1.7 原文要求每一次都有诊断或网关日志，这个网关不回诊断，见结果。
 - **G-2**：after-restart 类的零命中为 0。只统计续上前后构建、模型和 effort 都没变的替换（`--restart`）；部署新构建后的首轮归入 after-deploy，不计入门槛（理由见 5.11.3）。窗口里没有同构建替换时，G-2 记为「无样本」，不算通过。部署后由主 agent 人为触发一次 P18.3 热切换补样本，这一步写在 P18.13 的完成标准里。
-- **G-3**：「续接充分」的比例至少 95%。统计范围是相邻的两次调用，要求同一会话、同一模型、间隔不超过 60 分钟（与 `--ttl-min` 相同）、中间没有压缩、也没有 `--deploy`。判据是：cache_read ≥ ⌊(P − max(0.1P, 4096)) / 128⌋ × 128，P 是前一次调用的 prompt token 数。这个余量覆盖两样东西：GPT-5.6 之前的模型按固定间隔放置隐式断点（GPT-5.5 是 2 048 token），最后一个断点之后的尾巴不会命中；以及 cached_tokens 按 128 向下取整。
+- **G-3**：「续接充分」的比例至少 95%。统计范围是相邻的两次调用，要求同一会话、同一模型、间隔不超过 `--ttl-min`（v1.8：GPT-5.6 及以后是 30 分钟，见第 4 步；v1.7 及以前是 60 分钟）、中间没有压缩、也没有 `--deploy`。判据是：cache_read ≥ ⌊(P − max(0.1P, 4096)) / 128⌋ × 128，P 是前一次调用的 prompt token 数。这个余量覆盖两样东西：GPT-5.6 之前的模型按固定间隔放置隐式断点（GPT-5.5 是 2 048 token），最后一个断点之后的尾巴不会命中；以及 cached_tokens 按 128 向下取整。
 
 **目标**（报出来，但不作为门槛）
 
@@ -1069,6 +1092,7 @@ v2.47.2（`168d41c6`）部署后，三个节点各自从部署时刻起算（最
   - G-1 不能靠厂商诊断。改为客户端每次记下「本次请求的前缀指纹」，内容是 key，以及 tools、instructions、input 前缀的分块哈希。某次零命中时，如果 key 和上一次请求覆盖范围内的分块哈希都没变，就判为「不是阡陌请求体变化」；变了的必须为 0。
   - G-3 的窗口按厂商文档的 30 min 下限重定。
   - 用同一个版本，在周末窗口（2026-10-10、10-11）同口径再收一次，把版本因素和工作日 / 周末因素分开。
+  - **v1.8**：前两件由 P18.21 完成：CH-8 已实现；第 4 步和 G-3 的窗口改为 30 min。第三件改成部署含 P18.21 的版本之后，同一份部署上同时收工作日和周末两段（第 8 步）。
 
 #### 5.11.9 出处
 
@@ -1104,6 +1128,10 @@ v2.47.2（`168d41c6`）部署后，三个节点各自从部署时刻起算（最
 8. CH-4 之后新会话的 `instructions` 带工作区的真实 git 状态，新会话之间的前缀 key 会随工作区变化；现网新建会话的频度和首轮的损失没有量过（5.11.5 CH-4）。
 9. 同构建替换在现网是否真的续上，要等 G-2 的样本，由 P18.13 验收时人为触发的那次热切换提供（5.11.8）。**v1.7 已有样本**：7 次同构建替换后的首调用全部命中（5.11.8 结果）。
 10. CH-5、CH-6 只在录制桩上验证过请求体和拒收路径。网关拒收时的错误文案如果不点名字段，识别不到，那一轮会照常报错；这种文案没有样本。
+11. CH-8（v1.8）只说明客户端发出的东西变没变。`changed` 为空时，零命中的具体原因是供应方哪一侧（过期、路由到别的机器、写入还没可见），它答不上来。另外三点：
+    - 它比的是请求体的 JSON 结构，网关在转发途中改写请求，它看不见。
+    - `/compact` 的 from 方向会记成 `input_changed`（见 CH-8 的「压缩」）。
+    - 失败的请求不更新车道，所以一次失败之后的那一轮，比较的是更早那次成功的请求。
 
 #### 5.11.12 实现与验证（2026-10-03）
 
@@ -1136,6 +1164,19 @@ v2.47.2（`168d41c6`）部署后，三个节点各自从部署时刻起算（最
 - CH-6：诊断对象的字段按官网是 `type`，设计里写成了 `status`。
 - CH-7：会话 id 由调用方 `claude.ts` 传入，比设计多改一个基座文件（纯插入一行实参），不新增 import 环。
 - 现网测法：保留期窗口 60 min；G-2 只统计同构建替换；归因脚本加了 `--deploy` 和 `diag=` 输出。
+
+#### 5.11.13 P18.21 实现与验证（2026-10-07）
+
+实现在分支 `feat/p18-21-cache-selfcheck`，基点 `cf57a8da`（v1.7）。
+
+| # | 测试 | 结果 |
+|---|---|---|
+| T-10 ① | 单元 `selfCheckGolden.test.ts`：关闭时 4 个场景逐字节等于在 `cf57a8da` 生产代码上生成的金样（舰队主循环、子代理、429 后重试、chat 线）；打开时请求体仍逐字节相同，消息去掉这个字段后相同，且字段只出现在三个 `/responses` 场景 | 8 过 0 红 |
+| T-10 ②③④ | 单元 `selfCheck.test.ts`：经录制桩走真实的 `queryModelOpenAI`。正常续轮、改 instructions、改 effort、改工具表、改旧输入项（`divergedAt` 与录制桩逐项比较的结果相同）、压缩、子代理车道、一次性 fork、429 重试、关闭；模块层另测 key、tier、格式、verbosity、键序、缩短、空体、坏 JSON、幂等、不含内容 | 15 过 0 红 |
+| T-10 ⑤ | 集成 `P18.21: the client self-check on a real child…`：真 `--acp` 子进程三轮（第二轮带一次工具往返，共 4 次请求），替换子进程（跨日期、改 `CLAUDE.md`）后续上一轮。5 次请求的记录依次是 `none`、`memory` ×3、`sidecar`，都没有变化；不留附件的反向对照记 `sidecar` / `input_changed` / `divergedAt` 0 | 2 过 0 红；同文件 P18.19 的 13 条照旧全过 |
+| T-10 ⑥ | 单元 `selfCheck.runner.ts`（由 `sessionSwitching.isolated.test.ts` 单独起进程）：边车跨「进程」、0600 / 0700、不含正文、子代理不落盘、别的会话不读、关闭落盘时不写 | 5 过 0 红 |
+
+与本节 CH-8 写法不同的地方：没有。任务书原写「会话内存里只留上一次的项数和末项哈希」，但只凭末项哈希定位不了第一个不同项，所以改成每项留 8 字节截断值（2 000 项约 16 KB）。
 
 ---
 
@@ -1430,6 +1471,7 @@ P18.4 顺带做审计「第一批」里不依赖评审的几项：A5（侧栏计
 | **P18.17** 控制台 P2 | B5 | §6.5 的 P2 | 视图与样式 | P18.14 | 否 | 各项「改法」逐条有用例 | 110–150 |
 | **P18.18** 多 key 轮换（D-6） | B4 | hermes #2：同一份档案挂 1..N 把 key，节点调用层按策略选取、按错误分类换 key 并冷却；中枢逐把加密保管；控制台逐把管理、显示每把的状态 | `packages/providers/**`（池字段；P18.2 已经按多 key 定好 schema）；`src/services/qianmo/providers/**`；`src/services/qianmo/modelCompat/credentialPool*.ts`（新）；`src/services/api/openai/{retry.ts,index.ts}`、`src/services/api/retryClassification.ts`（v1.7：实际没改，池模块直接读状态码与文案）；`src/cli/handlers/consoleProviders*.ts`；`src/cli/handlers/provider*.ts`；`packages/console/src/routes/providers.ts`、`packages/console/src/view/providers*.ts`；`docs/dev/base-modifications.md` | P18.6、P18.7、P18.9、P18.12 | **是**（三个调用层文件，纯插入） | 单 key 档案的编译、写入、请求行为与 P18.12 合入时逐字节一致（回归用例）；X-1（§5.11.6）：录制桩上同一会话的 10 个请求，在没有错误时只用一把 key，`round_robin`、`least_used` 在会话的第一次请求时选定 key、不按请求轮换；`fill_first`、`round_robin`、`least_used` 三种策略各有用例；hermes 行为表逐行有录制桩用例：429 先同 key 重试一次再换，用量上限立即换，402 立即换并冷却 1 h，401 换并冷却 5 min，`Retry-After` / `reset_at` 优先；全部 key 都在冷却时报错，并给出最早的恢复时间；换 key 越过 commitment 屏障之后不再重放；冷却状态持久化在节点 0600 文件里，重启后仍然有效；节点 `status` 逐把报 `ok / cooling / dead`，只带 key id，不带值；轮换或删除单把 key 之后，旧密文从密文库消失（字节扫描）；AC-P2 的金丝雀扫描覆盖多 key 流程。真机只有一把真 key（D-5），轮换只用录制桩验证，P18.13 不要求真机轮换 | 24–40 |
 | **P18.20** ACP 会话里的本地命令（D-9） | B2 | ACP 会话执行白名单内的本地命令（首批 `/autocompact`、`/compact`、`/context`），在 `available_commands_update` 里通告，输出作为 agent 消息返回、不发给模型；同一节点上任一途径改了 `autoCompactWindow`，运行中的会话在下一轮按新值判断 | `src/services/acp/agent/*.ts`（基座，纯插入或调用替换）；`src/services/acp/agent/localCommands.ts`（新）；`docs/dev/base-modifications.md` | P18.3 | **是** | 控制台对话页（经 resident 的 ACP）发 `/autocompact 150k` 后，节点 `settings.json` 的 `autoCompactWindow` 为 150 000，回显与终端一致，模型桩收到的请求数为 0；`/autocompact` 不带参数时回显当前值与来源；白名单外的本地命令仍按原样处理；改值后同一会话下一轮的压缩判断用新值（用例） | 16–24 |
+| **P18.21** 缓存现网跟进（v1.8 追加） | P18.13 之后 | P18.19 的现网门槛 G-1、G-3 没过（§5.11.8 结果）：CH-8 客户端前缀自检，G-1 改按自检判，G-3 窗口改 30 min | `src/services/qianmo/promptCache/selfCheck.ts`（新）、`sessionPromptContext.ts`（导出两个辅助）；`src/services/api/openai/{index.ts,responsesAdapter.ts}`（纯插入）；`src/services/qianmo/promptCache/__tests__/**`；`tests/integration/qianmo-prompt-cache.test.ts`；`docs/dev/base-modifications.md` | P18.19、P18.13 | **是**（两个文件，纯插入） | T-10 全绿（§5.11.13）；开关关闭时请求体与消息和基点逐字节一致，打开时请求体逐字节一致；现网按 §5.11.8 第 7、8 步收数，G-1 ~ G-3 用 v1.8 的判法 | 8–12 |
 
 ### 9.3 同批文件范围（互不相交）
 
@@ -1450,6 +1492,7 @@ P18.4 顺带做审计「第一批」里不依赖评审的几项：A5（侧栏计
 | 其中控制台 P0 与模型服务页（P18.4、P18.9、P18.10、P18.11） | 272–408 |
 | 控制台 P1、P2 与条件页（P18.14–P18.17） | 350–510 |
 | 其中多 key 轮换（P18.18，D-6） | 24–40 |
+| 缓存现网跟进（P18.21，v1.8 追加，不计入上面的核心合计） | 8–12 |
 | 其中缓存命中（P18.19） | 44–70 |
 | **全部** | **1074–1582** |
 | 指针包（计入 P15，不计入上面各行） | P15.9 8–14；P15.2 余下 8–16 |
