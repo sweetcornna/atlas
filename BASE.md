@@ -4,11 +4,11 @@
 ## Current reviewed-candidate base
 
 - Repository: https://github.com/can1357/oh-my-pi
-- Version: v18.8.8
-- Commit: 1ca13863a82825bdce02908b3db9713e9b084290
-- Snapshot: `base-snapshot/omp-v18.8.8` (b832507a5f9cbdd8d2136f55f1e44c2daf384503, no parents)
-- Tree: 1b30d3c80bc6f5c4d722e10dc82ebb6d8c4125a3 (byte-identical to upstream)
-- Previous snapshot: `base-snapshot/omp-v18.8.4` (retained unchanged)
+- Version: v18.14.1
+- Commit: c29f7c56f5530d805bb2887ade964aa55970d8e1
+- Snapshot: `base-snapshot/omp-v18.14.1` (dbd9ca7f315872244d974d641264fbae32a9c741, no parents)
+- Tree: 159794d10d1829017bf803b7757dfb3b0f514ece (byte-identical to upstream)
+- Previous snapshot: `base-snapshot/omp-v18.8.8` (retained unchanged)
 - Status: candidate; compatibility checks are attached to the draft PR. Deployment requires review.
 <!-- omp-current:end -->
 
