@@ -483,8 +483,9 @@ function frontScript(): string {
 
   function refreshAll() {
     // Not while a first line is on its way: the welcome under it is about to
-    // become the conversation, and redrawing it would drop the line.
-    var view = state.busy && !state.active ? Promise.resolve() : refreshView(false);
+    // become the conversation, and redrawing it would drop the line. Not while
+    // an opening is on its way either: it reads this, and is not to be read over.
+    var view = (state.busy && !state.active) || switching ? Promise.resolve() : refreshView(false);
     return Promise.all([view, refreshSide()]);
   }
 
@@ -1407,29 +1408,35 @@ function frontScript(): string {
 
   // The text, and the box's width, it was last sized for. Text that only
   // goes on from it, in a box as wide, can only make it taller: one look at
-  // whether it overflows. Anything else (a deletion, a paste over a
-  // selection, a value put back, a panel opened beside it) is measured from
-  // scratch, two more layouts.
+  // whether it overflows, the width read in the same layout. Anything else
+  // (a deletion, a paste over a selection, a value put back, the box made
+  // wider or narrower by a panel or the window) is measured from scratch,
+  // the width read once that measuring has laid it out. offsetWidth: a
+  // scrollbar at 240 px is not another width.
   var sizedFor = null;
-  var sizedWidth = 0;
+  var sizedWidth = -1;
   function autosize() {
     var box = byId('fx-text');
     if (!box) return;
     var value = box.value;
-    // Read before anything is written: one layout, the one the look below
-    // needs anyway.
-    var width = value ? box.clientWidth : 0;
     // An empty box is one line: its placeholder can wrap while the layout
     // settles, and must never be what sizes it.
     if (!value) box.style.height = '';
-    else if (sizedFor === null || !box.style.height || value.indexOf(sizedFor) !== 0 || width !== sizedWidth) {
-      box.style.height = 'auto';
-      box.style.height = Math.min(box.scrollHeight, 240) + 'px';
-    } else if (box.clientHeight < 240 && box.scrollHeight > box.clientHeight) {
-      box.style.height = Math.min(box.scrollHeight, 240) + 'px';
+    else {
+      var on = sizedFor !== null && !!box.style.height && value.indexOf(sizedFor) === 0 &&
+        box.offsetWidth === sizedWidth;
+      if (on) {
+        if (box.clientHeight < 240 && box.scrollHeight > box.clientHeight) {
+          box.style.height = Math.min(box.scrollHeight, 240) + 'px';
+        }
+      } else {
+        box.style.height = 'auto';
+        var tall = box.scrollHeight;
+        sizedWidth = box.offsetWidth;
+        box.style.height = Math.min(tall, 240) + 'px';
+      }
     }
     sizedFor = value;
-    sizedWidth = width;
     var send = byId('fx-send');
     if (send) send.disabled = box.disabled || !box.value.trim();
   }

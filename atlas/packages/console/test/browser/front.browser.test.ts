@@ -770,10 +770,15 @@ describe.skipIf(SKIP !== null)(
         await new Promise(resolve => setTimeout(resolve, 700))
         const opening = reads.find(read => read.open)
         expect(opening?.end).toBeGreaterThan(0)
-        // Every read in the background began once the opening was answered.
+        // Every read in the background began once the opening was answered,
+        // and the event was read: once, after it.
         expect(
           reads.filter(read => !read.open && read.start < (opening?.end ?? 0)),
         ).toEqual([])
+        expect(
+          reads.filter(read => !read.open && read.start >= (opening?.end ?? 0))
+            .length,
+        ).toBeGreaterThanOrEqual(1)
       } finally {
         await tab.close()
         server.stop(true)
