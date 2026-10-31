@@ -11,7 +11,7 @@
  * compiled binary holding qm, the oh-my-pi CLI and every library either
  * touches, regardless of which package.json field declared it. The Rust half
  * of the base (the `pi_natives` addon, embedded in that binary) is covered by
- * omp's own `about.toml` / `THIRD-PARTY-NOTICES.txt`, which this report points
+ * omp's own `about.toml` / `packages/natives/THIRD-PARTY-NOTICES.txt`, which this report points
  * at rather than re-deriving.
  *
  * ── Sources of truth ──────────────────────────────────────────────────────
@@ -973,7 +973,7 @@ type BinaryAudit = {
  * `pi_natives` N-API addon (built by `bun run build:native`, embedded into
  * `dist/qm-<target>` by `atlas/scripts/build-qm.ts`) and the vendored crates
  * beside it. Their third-party license inventory is omp's own, produced with
- * cargo-about from `about.toml` into `THIRD-PARTY-NOTICES.txt`; this audit
+ * cargo-about from `about.toml` into `packages/natives/THIRD-PARTY-NOTICES.txt`; this audit
  * records where those files are and what they cover, and does not re-derive
  * a Rust dependency list that `Cargo.lock` plus those two files already pin.
  */
@@ -986,7 +986,7 @@ async function auditPrebuiltBinaries(): Promise<BinaryAudit[]> {
     : []
   const cargoPackages = await countCargoLockPackages()
   const noticesPresent = await isFile(
-    join(REPO_ROOT, 'THIRD-PARTY-NOTICES.txt'),
+    join(REPO_ROOT, 'packages', 'natives', 'THIRD-PARTY-NOTICES.txt'),
   )
   const aboutPresent = await isFile(join(REPO_ROOT, 'about.toml'))
   rows.push({
@@ -996,11 +996,12 @@ async function auditPrebuiltBinaries(): Promise<BinaryAudit[]> {
         ? `${addons.length} 个本机构建的 \`pi_natives\` N-API 插件（${addons.join('、')}）`
         : '`pi_natives` N-API 插件（本机尚未构建；`bun run build:native`）',
     tracked: '不入库（构建产物）；编译时嵌入 `dist/qm-<target>`',
-    licenseFile: 'THIRD-PARTY-NOTICES.txt、about.toml、deny.toml（仓库根）',
+    licenseFile:
+      '`packages/natives/THIRD-PARTY-NOTICES.txt`；about.toml、deny.toml（仓库根）',
     provenance: `由 Cargo workspace（\`Cargo.lock\` ${cargoPackages} 个 package）构建；Rust 第三方依赖的许可清单取 omp 的 ${
       noticesPresent
-        ? '`THIRD-PARTY-NOTICES.txt`'
-        : '（缺失）`THIRD-PARTY-NOTICES.txt`'
+        ? '`packages/natives/THIRD-PARTY-NOTICES.txt`'
+        : '（缺失）`packages/natives/THIRD-PARTY-NOTICES.txt`'
     }，接受的许可表在 ${aboutPresent ? '`about.toml`' : '（缺失）`about.toml`'}，由 cargo-deny 的 \`deny.toml\` 兜底`,
   })
 
@@ -1019,7 +1020,7 @@ async function auditPrebuiltBinaries(): Promise<BinaryAudit[]> {
     tracked: '入库（git 跟踪）',
     licenseFile: `${withLicense.length}/${vendored.length} 个目录带 LICENSE/COPYING/NOTICE`,
     provenance:
-      '经 `[patch.crates-io]` 接入 Cargo workspace；各自许可正文收录在 THIRD-PARTY-NOTICES.txt 的「TRACKED VENDORED CODE」一节',
+      '经 `[patch.crates-io]` 接入 Cargo workspace；各自许可正文收录在 `packages/natives/THIRD-PARTY-NOTICES.txt` 的「VENDORED SOURCE AND DATA」一节',
   })
 
   rows.push({
@@ -1027,9 +1028,9 @@ async function auditPrebuiltBinaries(): Promise<BinaryAudit[]> {
     what: 'qm 与 oh-my-pi CLI 编成的单个可执行文件（Bun --compile），内嵌上面的 `pi_natives` 插件',
     tracked: '不入库（`atlas/scripts/build-qm.ts` 产物）',
     licenseFile:
-      '随产物分发时附 LICENSE、LICENSE.base、NOTICE 与 THIRD-PARTY-NOTICES.txt',
+      '随产物分发时附 LICENSE、LICENSE.base、NOTICE 与 `packages/coding-agent`、`packages/natives` 下的两份 THIRD-PARTY-NOTICES.txt',
     provenance:
-      '源码为本仓库（阡陌层 AGPL-3.0-or-later，基座层 MIT）；JS 依赖由上面的 bun.lock 清单覆盖，Rust 依赖由 omp 的 THIRD-PARTY-NOTICES.txt 覆盖',
+      '源码为本仓库（阡陌层 AGPL-3.0-or-later，基座层 MIT）；JS 依赖由上面的 bun.lock 清单覆盖，Rust 依赖由 omp 的 `packages/natives/THIRD-PARTY-NOTICES.txt` 覆盖',
   })
 
   return rows
@@ -1329,7 +1330,7 @@ function buildBom(lock: Lockfile, rows: Row[]): unknown {
         {
           name: 'qianmo:source',
           value:
-            'bun.lock + root package.json catalog + node_modules; Rust: THIRD-PARTY-NOTICES.txt',
+            'bun.lock + root package.json catalog + node_modules; Rust: packages/natives/THIRD-PARTY-NOTICES.txt',
         },
         { name: 'qianmo:lockfileSha256', value: lock.sha256 },
         {

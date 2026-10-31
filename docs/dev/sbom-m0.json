@@ -18,11 +18,11 @@
       "properties": [
         {
           "name": "qianmo:basePin",
-          "value": "1ca13863a82825bdce02908b3db9713e9b084290"
+          "value": "c29f7c56f5530d805bb2887ade964aa55970d8e1"
         },
         {
           "name": "qianmo:baseTag",
-          "value": "v18.8.8"
+          "value": "v18.14.1"
         },
         {
           "name": "qianmo:rootPackage",
@@ -40,11 +40,11 @@
     "properties": [
       {
         "name": "qianmo:source",
-        "value": "bun.lock + root package.json catalog + node_modules; Rust: THIRD-PARTY-NOTICES.txt"
+        "value": "bun.lock + root package.json catalog + node_modules; Rust: packages/natives/THIRD-PARTY-NOTICES.txt"
       },
       {
         "name": "qianmo:lockfileSha256",
-        "value": "fde51f2eea77b948f7613b3e7e281de4cb262c68aa11a98de23c83698d1afa7e"
+        "value": "eb6a5c81beb836b8219d9c0ac34c99b889ec5b0591cd56cfd30166229607240e"
       },
       {
         "name": "qianmo:deterministic",
@@ -5130,11 +5130,11 @@
     },
     {
       "type": "application",
-      "bom-ref": "pkg:npm/%40oh-my-pi/omp-stats@18.8.8",
+      "bom-ref": "pkg:npm/%40oh-my-pi/omp-stats@18.14.1",
       "name": "@oh-my-pi/omp-stats",
-      "version": "18.8.8",
+      "version": "18.14.1",
       "scope": "required",
-      "purl": "pkg:npm/%40oh-my-pi/omp-stats@18.8.8",
+      "purl": "pkg:npm/%40oh-my-pi/omp-stats@18.14.1",
       "licenses": [
         {
           "license": {
@@ -5159,11 +5159,11 @@
     },
     {
       "type": "application",
-      "bom-ref": "pkg:npm/%40oh-my-pi/omptype@18.8.8",
+      "bom-ref": "pkg:npm/%40oh-my-pi/omptype@18.14.1",
       "name": "@oh-my-pi/omptype",
-      "version": "18.8.8",
+      "version": "18.14.1",
       "scope": "required",
-      "purl": "pkg:npm/%40oh-my-pi/omptype@18.8.8",
+      "purl": "pkg:npm/%40oh-my-pi/omptype@18.14.1",
       "licenses": [
         {
           "license": {
@@ -5188,11 +5188,11 @@
     },
     {
       "type": "application",
-      "bom-ref": "pkg:npm/%40oh-my-pi/pi-agent-core@18.8.8",
+      "bom-ref": "pkg:npm/%40oh-my-pi/pi-agent-core@18.14.1",
       "name": "@oh-my-pi/pi-agent-core",
-      "version": "18.8.8",
+      "version": "18.14.1",
       "scope": "required",
-      "purl": "pkg:npm/%40oh-my-pi/pi-agent-core@18.8.8",
+      "purl": "pkg:npm/%40oh-my-pi/pi-agent-core@18.14.1",
       "licenses": [
         {
           "license": {
@@ -5217,11 +5217,11 @@
     },
     {
       "type": "application",
-      "bom-ref": "pkg:npm/%40oh-my-pi/pi-ai@18.8.8",
+      "bom-ref": "pkg:npm/%40oh-my-pi/pi-ai@18.14.1",
       "name": "@oh-my-pi/pi-ai",
-      "version": "18.8.8",
+      "version": "18.14.1",
       "scope": "required",
-      "purl": "pkg:npm/%40oh-my-pi/pi-ai@18.8.8",
+      "purl": "pkg:npm/%40oh-my-pi/pi-ai@18.14.1",
       "licenses": [
         {
           "license": {
@@ -5246,11 +5246,11 @@
     },
     {
       "type": "application",
-      "bom-ref": "pkg:npm/%40oh-my-pi/pi-catalog@18.8.8",
+      "bom-ref": "pkg:npm/%40oh-my-pi/pi-catalog@18.14.1",
       "name": "@oh-my-pi/pi-catalog",
-      "version": "18.8.8",
+      "version": "18.14.1",
       "scope": "required",
-      "purl": "pkg:npm/%40oh-my-pi/pi-catalog@18.8.8",
+      "purl": "pkg:npm/%40oh-my-pi/pi-catalog@18.14.1",
       "licenses": [
         {
           "license": {
@@ -5275,11 +5275,11 @@
     },
     {
       "type": "application",
-      "bom-ref": "pkg:npm/%40oh-my-pi/pi-coding-agent@18.8.8",
+      "bom-ref": "pkg:npm/%40oh-my-pi/pi-coding-agent@18.14.1",
       "name": "@oh-my-pi/pi-coding-agent",
-      "version": "18.8.8",
+      "version": "18.14.1",
       "scope": "required",
-      "purl": "pkg:npm/%40oh-my-pi/pi-coding-agent@18.8.8",
+      "purl": "pkg:npm/%40oh-my-pi/pi-coding-agent@18.14.1",
       "licenses": [
         {
           "license": {
@@ -5333,11 +5333,11 @@
     },
     {
       "type": "application",
-      "bom-ref": "pkg:npm/%40oh-my-pi/pi-mnemopi@18.8.8",
+      "bom-ref": "pkg:npm/%40oh-my-pi/pi-mnemopi@18.14.1",
       "name": "@oh-my-pi/pi-mnemopi",
-      "version": "18.8.8",
+      "version": "18.14.1",
       "scope": "required",
-      "purl": "pkg:npm/%40oh-my-pi/pi-mnemopi@18.8.8",
+      "purl": "pkg:npm/%40oh-my-pi/pi-mnemopi@18.14.1",
       "licenses": [
         {
           "license": {
@@ -5362,11 +5362,11 @@
     },
     {
       "type": "application",
-      "bom-ref": "pkg:npm/%40oh-my-pi/pi-natives@18.8.8",
+      "bom-ref": "pkg:npm/%40oh-my-pi/pi-natives@18.14.1",
       "name": "@oh-my-pi/pi-natives",
-      "version": "18.8.8",
+      "version": "18.14.1",
       "scope": "required",
-      "purl": "pkg:npm/%40oh-my-pi/pi-natives@18.8.8",
+      "purl": "pkg:npm/%40oh-my-pi/pi-natives@18.14.1",
       "licenses": [
         {
           "license": {
@@ -5391,11 +5391,11 @@
     },
     {
       "type": "application",
-      "bom-ref": "pkg:npm/%40oh-my-pi/pi-tui@18.8.8",
+      "bom-ref": "pkg:npm/%40oh-my-pi/pi-tui@18.14.1",
       "name": "@oh-my-pi/pi-tui",
-      "version": "18.8.8",
+      "version": "18.14.1",
       "scope": "required",
-      "purl": "pkg:npm/%40oh-my-pi/pi-tui@18.8.8",
+      "purl": "pkg:npm/%40oh-my-pi/pi-tui@18.14.1",
       "licenses": [
         {
           "license": {
@@ -5420,11 +5420,11 @@
     },
     {
       "type": "application",
-      "bom-ref": "pkg:npm/%40oh-my-pi/pi-utils@18.8.8",
+      "bom-ref": "pkg:npm/%40oh-my-pi/pi-utils@18.14.1",
       "name": "@oh-my-pi/pi-utils",
-      "version": "18.8.8",
+      "version": "18.14.1",
       "scope": "required",
-      "purl": "pkg:npm/%40oh-my-pi/pi-utils@18.8.8",
+      "purl": "pkg:npm/%40oh-my-pi/pi-utils@18.14.1",
       "licenses": [
         {
           "license": {
@@ -5449,11 +5449,11 @@
     },
     {
       "type": "application",
-      "bom-ref": "pkg:npm/%40oh-my-pi/pi-wire@18.8.8",
+      "bom-ref": "pkg:npm/%40oh-my-pi/pi-wire@18.14.1",
       "name": "@oh-my-pi/pi-wire",
-      "version": "18.8.8",
+      "version": "18.14.1",
       "scope": "required",
-      "purl": "pkg:npm/%40oh-my-pi/pi-wire@18.8.8",
+      "purl": "pkg:npm/%40oh-my-pi/pi-wire@18.14.1",
       "licenses": [
         {
           "license": {
@@ -5478,11 +5478,11 @@
     },
     {
       "type": "application",
-      "bom-ref": "pkg:npm/%40oh-my-pi/snapcompact@18.8.8",
+      "bom-ref": "pkg:npm/%40oh-my-pi/snapcompact@18.14.1",
       "name": "@oh-my-pi/snapcompact",
-      "version": "18.8.8",
+      "version": "18.14.1",
       "scope": "required",
-      "purl": "pkg:npm/%40oh-my-pi/snapcompact@18.8.8",
+      "purl": "pkg:npm/%40oh-my-pi/snapcompact@18.14.1",
       "licenses": [
         {
           "license": {
