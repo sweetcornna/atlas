@@ -76,6 +76,7 @@ fn item(
 
 /// The macOS menu bar: app, File, Edit, View, Window, Help. The Edit menu is
 /// what makes ⌘C and ⌘V work in the pages.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let t: &Text = text(app.state::<Shell>().lang);
     let app_menu = SubmenuBuilder::new(app, t.app)

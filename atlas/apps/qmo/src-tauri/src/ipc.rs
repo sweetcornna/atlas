@@ -177,6 +177,28 @@ pub fn local_caller(page: Option<&Url>, hub: Option<&Hub>, window: &str) -> Resu
     }
 }
 
+/// The shell's own Code page (P37.16, qmo-local.md §8): opened from the
+/// offline page when the hub is out of reach, it shows this computer's
+/// sessions and carries them on.
+pub const OFFLINE_CODE: &str = "/code.html";
+
+/// Whether `page` is the shell's own Code page.
+pub fn is_offline_code(page: &Url) -> bool {
+    crate::hub::is_local(page) && page.port().is_none() && page.path() == OFFLINE_CODE
+}
+
+/// The commands of a session that exists (`shell::OFFLINE_COMMANDS`): the
+/// hub's page in the main window, or the shell's own Code page there. No
+/// other local page, and never another window.
+pub fn session_caller(page: Option<&Url>, hub: Option<&Hub>, window: &str) -> Result<(), Invalid> {
+    match page {
+        Some(page) if window == crate::shell::MAIN && is_offline_code(page) => Ok(()),
+        _ => local_caller(page, hub, window).map_err(|_| {
+            invalid("only the hub's page or the shell's Code page in the main window may call this")
+        }),
+    }
+}
+
 /// What a checked call asks the runner: one of its methods (qmo-local.md §4.3.2)
 /// and the parameters, built afresh from the checked values.
 #[derive(Debug, Clone, PartialEq)]
@@ -1165,6 +1187,60 @@ mod tests {
         }
         assert!(local_caller(None, Some(&hub), "main").is_err());
         assert!(local_caller(Some(&code), None, "main").is_err());
+        // The shell's own Code page is not the hub's.
+        assert!(local_caller(
+            Some(&page("tauri://localhost/code.html")),
+            Some(&hub),
+            "main"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn a_session_is_carried_on_from_the_hubs_page_or_the_shells_code_page_in_main() {
+        let hub = crate::hub::parse_hub("https://hub.example.com").unwrap();
+        let page = |s: &str| Url::parse(s).unwrap();
+        for ours in [
+            "https://hub.example.com/code",
+            "tauri://localhost/code.html",
+            "http://tauri.localhost/code.html",
+            "https://tauri.localhost/code.html",
+            "tauri://localhost/code.html?session=cs_AbCdEfGhIjKlMnOpQrSt_-",
+        ] {
+            assert!(
+                session_caller(Some(&page(ours)), Some(&hub), "main").is_ok(),
+                "{ours}"
+            );
+            for window in ["quick", "settings", "signin", "about", ""] {
+                assert!(
+                    session_caller(Some(&page(ours)), Some(&hub), window).is_err(),
+                    "{ours} in {window}"
+                );
+            }
+        }
+        // Offline the hub may be unknown: the shell's page needs none.
+        assert!(session_caller(Some(&page("tauri://localhost/code.html")), None, "main").is_ok());
+        for other in [
+            "tauri://localhost/offline.html",
+            "tauri://localhost/skeleton.html",
+            "tauri://localhost/settings.html",
+            "tauri://localhost/index.html",
+            "tauri://localhost/code.htm",
+            "tauri://localhost/x/code.html",
+            "http://tauri.localhost:8000/code.html",
+            "tauri://localhost:1/code.html",
+            "tauri://evil/code.html",
+            "http://tauri.localhost.evil.com/code.html",
+            "https://evil.example.com/code.html",
+            "file:///code.html",
+            "about:blank",
+        ] {
+            assert!(
+                session_caller(Some(&page(other)), Some(&hub), "main").is_err(),
+                "{other}"
+            );
+        }
+        assert!(session_caller(None, Some(&hub), "main").is_err());
     }
 
     #[test]

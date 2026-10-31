@@ -185,6 +185,59 @@ describe.skipIf(SKIP !== null)(
       expect(differ).toEqual([])
     }, 30_000)
 
+    test('an answer drawn as it grows is the answer drawn whole, at every step, and keeps what is done', async () => {
+      const essay = [
+        '先看这里：',
+        '',
+        `${FENCE}ts\nconst a = 1\n\nconst b = 2\n${FENCE}`,
+        '',
+        '- 一\n- 二',
+        '',
+        '**完** 还有 `code`',
+        '',
+        `${FENCE}\n未闭合\n\n还在里面`,
+      ].join('\n')
+      const inputs = [...CASES, ...fuzz(300), essay]
+      const differ = await tab.evaluate<unknown[]>(`(() => {
+        const inputs = ${JSON.stringify(inputs)};
+        const R = window.qianmoCode;
+        const out = [];
+        for (const input of inputs) {
+          const live = document.createElement('div');
+          const whole = document.createElement('div');
+          let at = 0;
+          let k = 0;
+          while (at < input.length) {
+            at = Math.min(input.length, at + 1 + (k++ % 7));
+            const part = input.slice(0, at);
+            R.grow(live, part);
+            whole.textContent = '';
+            R.richText(whole, part);
+            if (live.innerHTML !== whole.innerHTML) {
+              out.push({ input, at, live: live.innerHTML, whole: whole.innerHTML });
+              break;
+            }
+          }
+        }
+        return out;
+      })()`)
+      expect(differ).toEqual([])
+      const kept = await tab.evaluate<unknown>(`(() => {
+        const R = window.qianmoCode;
+        const live = document.createElement('div');
+        R.grow(live, '第一段\\n\\n第二');
+        const first = live.firstChild;
+        R.grow(live, '第一段\\n\\n第二段继续\\n\\n- 列表');
+        const same = live.firstChild === first;
+        // Not a continuation (the turn changed): drawn afresh.
+        R.grow(live, '另一句');
+        const whole = document.createElement('div');
+        R.richText(whole, '另一句');
+        return { same, fresh: live.innerHTML === whole.innerHTML, count: live.childNodes.length };
+      })()`)
+      expect(kept).toEqual({ same: true, fresh: true, count: 1 })
+    }, 30_000)
+
     test('the page builds only the subset’s elements, and no attribute but class', async () => {
       const tags = await tab.evaluate<readonly string[]>(`(() => {
       const box = document.createElement('template');

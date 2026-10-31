@@ -107,6 +107,22 @@ function frontScript(): string {
   var source = null;
   var opened = false;
   var sideTimer = null;
+  var viewTimer = null;
+  // A stream the hub refused (a restart behind a proxy) is closed for good:
+  // it is opened again, later each time, while the polls keep the page up.
+  var reopenTimer = null;
+  var reopenDelay = 0;
+  // The fragments last swapped in and the nodes they became: the same answer
+  // again (a 304, a poll, an event that changed nothing shown) is not parsed
+  // and swapped in again, which on a long conversation is most of the cost.
+  var shownView = null;
+  var shownSide = null;
+  // The page changed the thread itself (a line on its way, one that did not
+  // go): the next answer is drawn, whatever it is.
+  function touched() { shownView = null; }
+  // The side list's day groups (今天, 昨天) are the page's, for the reader's
+  // today: an answer from another day is drawn again.
+  function today() { return new Date().toDateString(); }
   var viewSeq = 0;
   var sideSeq = 0;
   // Bumped by every move to another conversation. A send pins the number it
@@ -150,16 +166,83 @@ function frontScript(): string {
 
   /* ---------------- fragments ---------------- */
 
-  // Parsed in a detached template - inert, no script runs - and adopted by id.
-  function adopt(html, ids) {
+  // Parsed in a detached template - inert, no script runs - and adopted by
+  // id. With keep, the thread of the conversation already on screen is
+  // brought up to date in place (morph) rather than swapped whole.
+  function adopt(html, ids, keep) {
     var tpl = document.createElement('template');
     tpl.innerHTML = html;
     for (var i = 0; i < ids.length; i++) {
       var next = tpl.content.querySelector('#' + ids[i]);
       var current = byId(ids[i]);
-      if (next && current) current.replaceWith(next);
+      if (!next || !current) continue;
+      if (ids[i] !== 'fx-thread') current.replaceWith(next);
+      else if (keep && sameThread(current, next)) morph(current, next);
+      else { mark(next); current.replaceWith(next); }
     }
   }
+
+  // A thread drawn again is mostly what it was: on a conversation of 280
+  // entries, swapping all of it for every step of an answer was the page's
+  // whole cost (layout and style of everything, each time). Each entry keeps
+  // the markup it came from (qmoSrc); an entry the server draws the same is
+  // left where it is, with what the page did to it (its times, its folds),
+  // and only the rest goes in.
+  function sameThread(current, next) {
+    var session = current.getAttribute('data-session') || '';
+    return !!session && session === (next.getAttribute('data-session') || '') &&
+      !!current.querySelector(':scope > .fx-msgs') && !!next.querySelector(':scope > .fx-msgs');
+  }
+  function mark(el) {
+    for (var i = 0; i < el.children.length; i++) {
+      var kid = el.children[i];
+      if (kid.classList.contains('fx-msgs')) mark(kid);
+      else kid.qmoSrc = kid.outerHTML;
+    }
+  }
+  function morph(live, next) {
+    var a;
+    for (a = live.attributes.length - 1; a >= 0; a--) {
+      if (!next.hasAttribute(live.attributes[a].name)) live.removeAttribute(live.attributes[a].name);
+    }
+    for (a = 0; a < next.attributes.length; a++) {
+      var at = next.attributes[a];
+      if (live.getAttribute(at.name) !== at.value) live.setAttribute(at.name, at.value);
+    }
+    var have = {};
+    var oldList = null;
+    for (var i = 0; i < live.children.length; i++) {
+      var old = live.children[i];
+      if (old.classList.contains('fx-msgs')) oldList = old;
+      else if (old.qmoSrc) (have[old.qmoSrc] = have[old.qmoSrc] || []).push(old);
+    }
+    var kids = Array.prototype.slice.call(next.children);
+    var want = [];
+    for (var k = 0; k < kids.length; k++) {
+      var kid = kids[k];
+      if (oldList && kid.classList.contains('fx-msgs')) { morph(oldList, kid); want.push(oldList); continue; }
+      if (kid.classList.contains('fx-msgs')) { mark(kid); want.push(kid); continue; }
+      var src = kid.outerHTML;
+      var same = have[src] && have[src].shift();
+      if (same) want.push(same);
+      else { kid.qmoSrc = src; want.push(kid); }
+    }
+    // What goes first, so a kept entry is never taken out and put back
+    // (which would restart its arrival animation and lay it out again).
+    var keeping = new Set(want);
+    for (var r = live.children.length - 1; r >= 0; r--) {
+      if (!keeping.has(live.children[r])) live.removeChild(live.children[r]);
+    }
+    for (var w = 0; w < want.length; w++) {
+      if (live.children[w] !== want[w]) live.insertBefore(want[w], live.children[w] || null);
+    }
+  }
+
+  // An entry eases in once: the class goes when its animation has run.
+  document.addEventListener('animationend', function (event) {
+    var el = event.target;
+    if (el && el.classList && el.classList.contains('is-arriving')) el.classList.remove('is-arriving');
+  });
 
   // A <details data-key> folded or unfolded by hand stays that way.
   document.addEventListener('click', function (event) {
@@ -206,6 +289,8 @@ function frontScript(): string {
   // server writes a ledger line for it (P15.9), and never for a refresh.
   function refreshView(opening, toBottom) {
     if (CHATLESS || split() || qc.isExpired()) return Promise.resolve();
+    // An opening, a send or a retry reads what the stream's next read would.
+    if (viewTimer && (opening || toBottom === true)) { clearTimeout(viewTimer); viewTimer = null; }
     var seq = ++viewSeq;
     var scroller = byId('fx-scroll');
     var stick = toBottom === true || atBottom(scroller);
@@ -213,8 +298,16 @@ function frontScript(): string {
     var figure = figureIn('fx-head');
     return qc.loadHtml(viewUrl(opening)).then(function (html) {
       if (seq !== viewSeq || qc.isExpired()) return false;
+      // Only a refresh in the background: an opening, a send or a retry
+      // (toBottom) redraws whatever came back.
+      if (!opening && toBottom !== true && shownView && shownView.html === html &&
+          shownView.thread === byId('fx-thread')) {
+        stopRetry();
+        return true;
+      }
       var was = threadState();
-      adopt(html, ['fx-head', 'fx-thread', 'fx-activity']);
+      adopt(html, ['fx-head', 'fx-thread', 'fx-activity'], !opening);
+      shownView = { html: html, thread: byId('fx-thread') };
       stopRetry();
       keepFigure(figure);
       if (!opening) easeRedraw(was);
@@ -300,6 +393,7 @@ function frontScript(): string {
       if (oldClock && newClock) oldClock.textContent = newClock.textContent;
     }
     prev.setAttribute('aria-label', next.getAttribute('aria-label') || '');
+    prev.qmoSrc = next.qmoSrc;
     next.replaceWith(prev);
   }
 
@@ -336,6 +430,10 @@ function frontScript(): string {
     var listTop = list ? list.scrollTop : 0;
     return qc.loadHtml(ROUTES.side + (query.length ? '?' + query.join('&') : '')).then(function (html) {
       if (seq !== sideSeq || qc.isExpired()) return;
+      if (shownSide && shownSide.html === html && shownSide.stack === byId('fx-stack') && shownSide.day === today()) {
+        markCurrent();
+        return;
+      }
       // A menu, the agent picker or the 其他对话 dialog somebody has open is
       // not swapped out from under the pointer.
       var ids = ['fx-stack'];
@@ -346,6 +444,9 @@ function frontScript(): string {
       var picker = byId('fx-agent-menu');
       if (!picker || picker.hidden) ids.push('fx-agent-menu');
       adopt(html, ids);
+      // Kept only when all of it went in: a part held back for an open menu
+      // comes in with the next answer, the same or not.
+      shownSide = ids.length === 5 ? { html: html, stack: byId('fx-stack'), day: today() } : null;
       regroup();
       keepChoices(byId('fx-agents'));
       keepChoices(byId('fx-stack'));
@@ -366,10 +467,27 @@ function frontScript(): string {
     sideTimer = setTimeout(function () { sideTimer = null; refreshSide(); }, 350);
   }
 
+  // The stream's events for the conversation on screen, a few to a step:
+  // one read for the lot.
+  function soonView() {
+    if (viewTimer || qc.isExpired()) return;
+    var mine = nav;
+    viewTimer = setTimeout(function () {
+      viewTimer = null;
+      if (mine !== nav) return;
+      // An opening still on its way reads what this would: wait for it.
+      if (switching) { soonView(); return; }
+      refreshView(false);
+    }, 150);
+  }
+
   function refreshAll() {
     // Not while a first line is on its way: the welcome under it is about to
-    // become the conversation, and redrawing it would drop the line.
-    var view = state.busy && !state.active ? Promise.resolve() : refreshView(false);
+    // become the conversation, and redrawing it would drop the line. While an
+    // opening is on its way, after it (soonView waits for it): read over, its
+    // answer would be dropped; not read, a change it missed would be.
+    var view = state.busy && !state.active ? Promise.resolve() :
+      switching ? (soonView(), Promise.resolve()) : refreshView(false);
     return Promise.all([view, refreshSide()]);
   }
 
@@ -1115,6 +1233,7 @@ function frontScript(): string {
   function paintSending(text) {
     var thread = byId('fx-thread');
     if (!thread) return null;
+    touched();
     var list = thread.querySelector('.fx-msgs');
     if (!list) {
       var main = byId('fx-main');
@@ -1155,6 +1274,7 @@ function frontScript(): string {
   // Drawn the way the server draws a line that was not delivered
   // (is-failed, fx-fail), with 重试 beside the words.
   function unsentLine(line, text, session) {
+    touched();
     line.classList.remove('is-sending');
     line.classList.add('is-failed');
     var meta = line.querySelector('.fx-meta');
@@ -1247,8 +1367,8 @@ function frontScript(): string {
       // On a welcome the line replaced, the welcome is drawn again and the
       // text goes back into the box: there is no conversation to keep it in.
       var keepLine = !!ghost && !welcome && pin.nav === nav;
-      if (keepLine) unsentLine(ghost, text, pin.active);
-      else if (ghost) ghost.remove();
+      if (keepLine) { unsentLine(ghost, text, pin.active); keepUnsent(); }
+      else if (ghost) { ghost.remove(); touched(); }
       if (pin.nav === nav) {
         if (!keepLine && typeof given !== 'string' && !box.value) box.value = kept;
         autosize();
@@ -1288,16 +1408,37 @@ function frontScript(): string {
 
   /* ---------------- the composer ---------------- */
 
+  // The text, and the box's width, it was last sized for. Text that only
+  // goes on from it, in a box as wide, can only make it taller: one look at
+  // whether it overflows, the width read in the same layout. Anything else
+  // (a deletion, a paste over a selection, a value put back, the box made
+  // wider or narrower by a panel or the window) is measured from scratch,
+  // the width read once that measuring has laid it out. offsetWidth: a
+  // scrollbar at 240 px is not another width.
+  var sizedFor = null;
+  var sizedWidth = -1;
   function autosize() {
     var box = byId('fx-text');
     if (!box) return;
+    var value = box.value;
     // An empty box is one line: its placeholder can wrap while the layout
     // settles, and must never be what sizes it.
-    if (!box.value) box.style.height = '';
+    if (!value) box.style.height = '';
     else {
-      box.style.height = 'auto';
-      box.style.height = Math.min(box.scrollHeight, 240) + 'px';
+      var on = sizedFor !== null && !!box.style.height && value.indexOf(sizedFor) === 0 &&
+        box.offsetWidth === sizedWidth;
+      if (on) {
+        if (box.clientHeight < 240 && box.scrollHeight > box.clientHeight) {
+          box.style.height = Math.min(box.scrollHeight, 240) + 'px';
+        }
+      } else {
+        box.style.height = 'auto';
+        var tall = box.scrollHeight;
+        sizedWidth = box.offsetWidth;
+        box.style.height = Math.min(tall, 240) + 'px';
+      }
     }
+    sizedFor = value;
     var send = byId('fx-send');
     if (send) send.disabled = box.disabled || !box.value.trim();
   }
@@ -1503,6 +1644,7 @@ function frontScript(): string {
     catch (e) { startPolling(tx('polling', '轮询中')); return; }
     source.addEventListener('open', function () {
       var resync = !!pollTimer || opened;
+      reopenDelay = 0;
       stopPolling();
       say(byId('fx-live'), '', 'muted');
       // A reconnect may have missed events while it was down: catch up once.
@@ -1512,11 +1654,20 @@ function frontScript(): string {
     source.addEventListener('chat', function (event) {
       var payload = null;
       try { payload = JSON.parse(event.data); } catch (e) { payload = null; }
-      if (payload && payload.sessionId && payload.sessionId === state.active) refreshView(false);
+      if (payload && payload.sessionId && payload.sessionId === state.active) soonView();
       soonSide();
     });
+    var mine = source;
     source.addEventListener('error', function () {
       startPolling(tx('polling', '轮询中'));
+      // Not 200: the browser gave up on it (readyState 2). A pane's stream
+      // is the window's (qianmoSplit) and never ends up here.
+      if (mine !== source || mine.readyState !== 2 || reopenTimer || qc.isExpired()) return;
+      reopenDelay = Math.min(reopenDelay ? reopenDelay * 2 : 5000, 60000);
+      reopenTimer = setTimeout(function () {
+        reopenTimer = null;
+        if (mine === source && !qc.isExpired()) startStream();
+      }, reopenDelay);
     });
   }
 
@@ -1527,6 +1678,8 @@ function frontScript(): string {
     stopPolling();
     if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
     if (sideTimer) { clearTimeout(sideTimer); sideTimer = null; }
+    if (viewTimer) { clearTimeout(viewTimer); viewTimer = null; }
+    if (reopenTimer) { clearTimeout(reopenTimer); reopenTimer = null; }
     if (settle) { clearTimeout(settle); settle = null; }
     stopRetry();
     viewSeq++;

@@ -223,6 +223,18 @@ ${APPROVAL_CARD_JS}
   var seq = 0;
   var uid = 0;
   var shownSession = null;
+  // A pane (P37.18) is one conversation of its window's: the window reads
+  // the list for all of them and hands it over (window.qianmoApprovals and
+  // qianmo:approvals on its document), so four panes are not five polls; a
+  // pane reads it itself only where the window does not. System
+  // notifications are the window's alone.
+  var host = null;
+  try {
+    var root = document.getElementById('fx');
+    if (root && root.getAttribute('data-pane') === '1' && window.parent !== window && window.parent.qianmoApprovals) {
+      host = window.parent;
+    }
+  } catch (e) { host = null; }
 
   function byId(id) { return document.getElementById(id); }
   // Invisible controls read as their codepoints, as on the approvals page.
@@ -415,6 +427,10 @@ ${APPROVAL_CARD_JS}
   }
 
   function poll() {
+    if (host) {
+      try { host.qianmoApprovals.poll(); } catch (e) { /* the window's to do */ }
+      return;
+    }
     if (document.visibilityState !== 'visible' || (qc.isExpired && qc.isExpired())) return;
     var mine = ++seq;
     qc.sendJson('GET', '/v0/approvals?mine=1').then(function (answer) {
@@ -426,7 +442,18 @@ ${APPROVAL_CARD_JS}
       items = list;
       place();
       notify(list);
+      window.qianmoApprovals.items = list;
+      document.dispatchEvent(new CustomEvent('qianmo:approvals'));
     }, function () { /* the next tick tries again */ });
+  }
+
+  // The window's list, in a pane.
+  function fromHost() {
+    var list = null;
+    try { list = host.qianmoApprovals.items; } catch (e) { list = null; }
+    if (!list) return;
+    items = Array.prototype.slice.call(list);
+    place();
   }
 
   // Whether the asking agent's turn in this conversation is still going:
@@ -482,6 +509,16 @@ ${APPROVAL_CARD_JS}
   });
   // The side list was drawn again: its rows' 等你 again.
   document.addEventListener('qianmo:front-side', asking);
+  if (host) {
+    var hostDoc = host.document;
+    hostDoc.addEventListener('qianmo:approvals', fromHost);
+    window.addEventListener('pagehide', function () {
+      try { hostDoc.removeEventListener('qianmo:approvals', fromHost); } catch (e) { /* gone with it */ }
+    });
+    fromHost();
+    return;
+  }
+  window.qianmoApprovals = { items: null, poll: poll };
   document.addEventListener('visibilitychange', poll);
   window.addEventListener('focus', poll);
   setInterval(poll, 5000);

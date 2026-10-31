@@ -4,7 +4,9 @@
 /**
  * The main window when the hub cannot be opened: why, in a line, and what to
  * do. Out of reach, it retries by itself — after 5, 10, 20 and then every 30
- * seconds, and at once when the system says the network is back.
+ * seconds, and at once when the system says the network is back — and
+ * offers this computer's sessions meanwhile: 打开本机会话 opens the shell's
+ * own Code page (P37.16), which carries them on without the hub.
  */
 
 import { invoke, mark, ready, t } from './shell.js'
@@ -33,6 +35,9 @@ $('detail').textContent = [
   .join(' · ')
 $('browser').hidden = !state.hub || kind === 'broken'
 $('signout').hidden = !['owner_inactive', 'loop', 'other'].includes(kind)
+// The hub out of reach or busy: local sessions do not need it. An account
+// the hub turned away, or a client that failed, is not this page's to go round.
+$('code').hidden = !['network', 'throttled'].includes(kind)
 
 function retry() {
   $('retry').disabled = true
@@ -43,6 +48,9 @@ function retry() {
 }
 
 $('retry').addEventListener('click', retry)
+$('code').addEventListener('click', () =>
+  invoke('local_open', { target: 'code' }),
+)
 $('browser').addEventListener('click', () =>
   invoke('local_open', { target: 'hub' }),
 )

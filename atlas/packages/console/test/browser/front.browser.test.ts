@@ -376,6 +376,534 @@ describe.skipIf(SKIP !== null)(
       }
     }, 30_000)
 
+    test('a burst of stream events reads the conversation once, and an answer that changed nothing is not swapped in', async () => {
+      const h = accountsHarness()
+      // The transcript is the lines sent, so the thread grows with them.
+      const read = h.chat.transcript.bind(h.chat)
+      h.chat.transcript = async (sessionId: string) => {
+        const got = await read(sessionId)
+        if (!got.ok) return got
+        const turns = h.chat.sent
+          .filter(input => input.sessionId === sessionId)
+          .map((input, i) => ({
+            id: `line-${i}`,
+            sessionId,
+            author: 'operator' as const,
+            at: NOW - 60_000 + i * 1_000,
+            text: input.text,
+            state: 'read' as const,
+          }))
+        return { ok: true, value: { session: got.value.session, turns } }
+      }
+      const member = await person(h.handle, 'member')
+      const seen: string[] = []
+      const server = Bun.serve({
+        port: 0,
+        hostname: '127.0.0.1',
+        fetch(request) {
+          seen.push(new URL(request.url).pathname)
+          return h.handle(request)
+        },
+      })
+      const base = `http://127.0.0.1:${server.port}`
+      const tab = await browser.tab()
+      const views = () =>
+        seen.filter(path => path === '/fragments/chat/front/view/session-1')
+          .length
+      try {
+        await tab.send('Network.setCookie', {
+          name: 'qianmo_session',
+          value: member.sid,
+          url: base,
+          httpOnly: true,
+          sameSite: 'Strict',
+        })
+        await observeChatStream(tab)
+        await tab.goto(`${base}/`)
+        await tab.waitFor(`window.__chatStreamOpen === true`)
+        await tab.evaluate(`(() => {
+        document.getElementById('fx-text').value = '检查节点运行状态';
+        document.getElementById('fx-composer').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      })()`)
+        await tab.waitFor(
+          `document.getElementById('fx-thread').getAttribute('data-session') === 'session-1' && document.getElementById('fx-text').value === ''`,
+        )
+        // Whatever the send set going has settled.
+        await new Promise(resolve => setTimeout(resolve, 800))
+        await tab.evaluate(
+          `window.__thread = document.getElementById('fx-thread'); window.__side = document.getElementById('fx-stack')`,
+        )
+        const before = views()
+        for (let i = 0; i < 5; i++) h.chat.emit('session-1')
+        await new Promise(resolve => setTimeout(resolve, 900))
+        expect(views() - before).toBe(1)
+        expect(
+          await tab.evaluate<unknown>(`({
+            thread: document.getElementById('fx-thread') === window.__thread,
+            side: document.getElementById('fx-stack') === window.__side,
+          })`),
+        ).toEqual({ thread: true, side: true })
+        // A second line: the thread is brought up to date in place, the
+        // entries that were there left as they were.
+        await tab.evaluate(
+          `window.__first = document.querySelector('#fx-thread .fx-msgs > .fx-sep')`,
+        )
+        await tab.evaluate(`(() => {
+        document.getElementById('fx-text').value = '再看一下磁盘';
+        document.getElementById('fx-composer').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      })()`)
+        await tab.waitFor(
+          `document.querySelectorAll('#fx-thread .fx-msgs > .fx-msg-user').length === 2 && !document.querySelector('#fx-thread .fx-msg-user.is-sending')`,
+        )
+        expect(
+          await tab.evaluate<unknown>(`({
+            thread: document.getElementById('fx-thread') === window.__thread,
+            first: !!window.__first && document.querySelector('#fx-thread .fx-msgs > .fx-sep') === window.__first,
+            texts: [...document.querySelectorAll('#fx-thread .fx-msg-user .fx-bubble')].map(n => n.textContent),
+          })`),
+        ).toEqual({
+          thread: true,
+          first: true,
+          texts: ['检查节点运行状态', '再看一下磁盘'],
+        })
+      } finally {
+        await tab.close()
+        server.stop(true)
+      }
+    }, 30_000)
+
+    test('a stream event just before a move does not read over the conversation opened', async () => {
+      const h = twoAgents()
+      const member = await person(h.handle, 'member')
+      const [planner] = await residents(h, member)
+      const views: string[] = []
+      const server = Bun.serve({
+        port: 0,
+        hostname: '127.0.0.1',
+        idleTimeout: 0,
+        fetch(request) {
+          const url = new URL(request.url)
+          if (url.pathname.startsWith('/fragments/chat/front/view'))
+            views.push(url.pathname + url.search)
+          return h.handle(request)
+        },
+      })
+      const base = `http://127.0.0.1:${server.port}`
+      const tab = await browser.tab()
+      try {
+        await tab.send('Network.setCookie', {
+          name: 'qianmo_session',
+          value: member.sid,
+          url: base,
+          httpOnly: true,
+          sameSite: 'Strict',
+        })
+        await observeChatStream(tab)
+        // The move comes 20 ms after the event: inside the 150 ms in which
+        // the page gathers a step's events into one read.
+        await tab.send('Page.addScriptToEvaluateOnNewDocument', {
+          source: `window.__moveOnChat = false;
+            const Before = window.EventSource;
+            window.EventSource = class extends Before {
+              constructor(url, options) {
+                super(url, options);
+                this.addEventListener('chat', () => {
+                  if (!window.__moveOnChat) return;
+                  window.__moveOnChat = false;
+                  setTimeout(() => ${REVIEWER_ROW}.click(), 20);
+                });
+              }
+            };`,
+        })
+        await tab.goto(`${base}/?session=${planner}`)
+        await tab.waitFor(
+          `window.__chatStreamOpen === true && document.getElementById('fx-thread').getAttribute('data-session') === ${JSON.stringify(planner)}`,
+        )
+        await new Promise(resolve => setTimeout(resolve, 500))
+        views.length = 0
+        await tab.evaluate('window.__moveOnChat = true')
+        h.chat.emit(planner)
+        await tab.waitFor(
+          `document.getElementById('fx-thread').getAttribute('data-target') === ${JSON.stringify(REVIEWER)}`,
+        )
+        await new Promise(resolve => setTimeout(resolve, 600))
+        // The opening's read, and no read in the background after it.
+        expect(views.filter(view => view.includes('open=1')).length).toBe(1)
+        expect(views.filter(view => !view.includes('open=1'))).toEqual([])
+      } finally {
+        await tab.close()
+        server.stop(true)
+      }
+    }, 30_000)
+
+    test('a first line that did not go, and a redraw that failed with it, leave the welcome to come back', async () => {
+      const h = accountsHarness()
+      const member = await person(h.handle, 'member')
+      let refuse = false
+      let failViews = 0
+      let views = 0
+      const server = Bun.serve({
+        port: 0,
+        hostname: '127.0.0.1',
+        idleTimeout: 0,
+        fetch(request) {
+          const url = new URL(request.url)
+          if (
+            refuse &&
+            request.method === 'POST' &&
+            url.pathname.startsWith('/v0/chat/sessions')
+          ) {
+            return new Response('{"error":{"code":"down","message":"down"}}', {
+              status: 503,
+              headers: { 'content-type': 'application/json' },
+            })
+          }
+          if (url.pathname.startsWith('/fragments/chat/front/view')) {
+            views += 1
+            if (failViews > 0) {
+              failViews -= 1
+              return new Response('', { status: 503 })
+            }
+          }
+          return h.handle(request)
+        },
+      })
+      const base = `http://127.0.0.1:${server.port}`
+      const tab = await browser.tab()
+      try {
+        await tab.send('Network.setCookie', {
+          name: 'qianmo_session',
+          value: member.sid,
+          url: base,
+          httpOnly: true,
+          sameSite: 'Strict',
+        })
+        await observeChatStream(tab)
+        await tab.goto(`${base}/`)
+        await tab.waitFor(`window.__chatStreamOpen === true`)
+        // A redraw in the background first: the page now knows this welcome.
+        let before = views
+        await tab.evaluate(
+          `document.dispatchEvent(new CustomEvent('qianmo:faces'))`,
+        )
+        while (views === before)
+          await new Promise(resolve => setTimeout(resolve, 20))
+        await new Promise(resolve => setTimeout(resolve, 300))
+        const welcome = await tab.evaluate<string>(
+          `document.getElementById('fx-thread').innerHTML`,
+        )
+        expect(welcome.length).toBeGreaterThan(0)
+        // The line does not go, and the redraw after it fails too.
+        refuse = true
+        failViews = 1
+        await tab.evaluate(`(() => {
+        document.getElementById('fx-text').value = '检查节点运行状态';
+        document.getElementById('fx-composer').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      })()`)
+        await tab.waitFor(
+          `document.getElementById('fx-status').textContent !== ''`,
+        )
+        await tab.waitFor(
+          `document.getElementById('fx-text').value === '检查节点运行状态'`,
+        )
+        while (failViews > 0)
+          await new Promise(resolve => setTimeout(resolve, 20))
+        refuse = false
+        // The next redraw brings the welcome back, the same as before.
+        before = views
+        await tab.evaluate(
+          `document.dispatchEvent(new CustomEvent('qianmo:faces'))`,
+        )
+        while (views === before)
+          await new Promise(resolve => setTimeout(resolve, 20))
+        await tab.waitFor(
+          `document.getElementById('fx-thread').innerHTML === ${JSON.stringify(welcome)}`,
+        )
+      } finally {
+        await tab.close()
+        server.stop(true)
+      }
+    }, 30_000)
+
+    test('a line that does not go stays as 未送达 even when the thread was brought up to date while it was on its way', async () => {
+      const h = accountsHarness()
+      // What the agent has said: the transcript.
+      const said: string[] = []
+      const read = h.chat.transcript.bind(h.chat)
+      h.chat.transcript = async (sessionId: string) => {
+        const got = await read(sessionId)
+        if (!got.ok) return got
+        const turns = said.map((text, i) => ({
+          id: `agent-${i}`,
+          sessionId,
+          author: 'agent' as const,
+          at: NOW - 30_000 + i * 1_000,
+          text,
+          state: 'done' as const,
+        }))
+        return { ok: true, value: { session: got.value.session, turns } }
+      }
+      const member = await person(h.handle, 'member')
+      let slow = false
+      const server = Bun.serve({
+        port: 0,
+        hostname: '127.0.0.1',
+        idleTimeout: 0,
+        async fetch(request) {
+          const url = new URL(request.url)
+          if (
+            slow &&
+            request.method === 'POST' &&
+            /\/messages$/.test(url.pathname)
+          ) {
+            await new Promise(resolve => setTimeout(resolve, 700))
+            return new Response('{"error":{"code":"down","message":"down"}}', {
+              status: 503,
+              headers: { 'content-type': 'application/json' },
+            })
+          }
+          return h.handle(request)
+        },
+      })
+      const base = `http://127.0.0.1:${server.port}`
+      const tab = await browser.tab()
+      try {
+        await tab.send('Network.setCookie', {
+          name: 'qianmo_session',
+          value: member.sid,
+          url: base,
+          httpOnly: true,
+          sameSite: 'Strict',
+        })
+        await observeChatStream(tab)
+        await tab.goto(`${base}/`)
+        await tab.waitFor(`window.__chatStreamOpen === true`)
+        const say = (text: string) =>
+          tab.evaluate(`(() => {
+          document.getElementById('fx-text').value = ${JSON.stringify(text)};
+          document.getElementById('fx-composer').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        })()`)
+        await say('检查节点运行状态')
+        await tab.waitFor(
+          `document.getElementById('fx-thread').getAttribute('data-session') === 'session-1' && document.getElementById('fx-text').value === ''`,
+        )
+        await new Promise(resolve => setTimeout(resolve, 500))
+        slow = true
+        await say('再看一下磁盘')
+        await tab.waitFor(
+          `!!document.querySelector('#fx-thread .fx-msg-user.is-sending')`,
+        )
+        // While it is on its way, the agent says something: the thread is
+        // read again and brought up to date, the line not yet in it.
+        said.push('先看了一下')
+        h.chat.emit('session-1')
+        await tab.waitFor(
+          `document.getElementById('fx-thread').textContent.includes('先看了一下')`,
+        )
+        await tab.waitFor(
+          `[...document.querySelectorAll('#fx-thread .fx-msg-user.is-failed')].some(m => m.textContent.includes('再看一下磁盘') && m.textContent.includes('未送达'))`,
+          5_000,
+        )
+      } finally {
+        await tab.close()
+        server.stop(true)
+      }
+    }, 30_000)
+
+    test('a stream event for the conversation being opened waits for the opening, not read over it', async () => {
+      const h = twoAgents()
+      const member = await person(h.handle, 'member')
+      const [planner, reviewer] = await residents(h, member)
+      const reads: { open: boolean; start: number; end: number }[] = []
+      const server = Bun.serve({
+        port: 0,
+        hostname: '127.0.0.1',
+        idleTimeout: 0,
+        async fetch(request) {
+          const url = new URL(request.url)
+          if (url.pathname !== `/fragments/chat/front/view/${reviewer}`)
+            return h.handle(request)
+          const read = {
+            open: url.searchParams.get('open') === '1',
+            start: Date.now(),
+            end: 0,
+          }
+          reads.push(read)
+          // The opening takes a while: the stream's event lands meanwhile.
+          if (read.open) await new Promise(resolve => setTimeout(resolve, 500))
+          const answer = await h.handle(request)
+          read.end = Date.now()
+          return answer
+        },
+      })
+      const base = `http://127.0.0.1:${server.port}`
+      const tab = await browser.tab()
+      try {
+        await tab.send('Network.setCookie', {
+          name: 'qianmo_session',
+          value: member.sid,
+          url: base,
+          httpOnly: true,
+          sameSite: 'Strict',
+        })
+        await observeChatStream(tab)
+        await tab.goto(`${base}/?session=${planner}`)
+        await tab.waitFor(
+          `window.__chatStreamOpen === true && document.getElementById('fx-thread').getAttribute('data-session') === ${JSON.stringify(planner)}`,
+        )
+        await new Promise(resolve => setTimeout(resolve, 400))
+        // Opened as a row of the list opens it.
+        await tab.evaluate(`(() => {
+          const row = document.createElement('button');
+          row.type = 'button';
+          row.setAttribute('data-action', 'fx-open');
+          row.setAttribute('data-session', ${JSON.stringify(reviewer)});
+          document.body.appendChild(row);
+          row.click();
+          row.remove();
+        })()`)
+        await new Promise(resolve => setTimeout(resolve, 30))
+        h.chat.emit(reviewer)
+        await tab.waitFor(
+          `document.getElementById('fx-thread').getAttribute('data-session') === ${JSON.stringify(reviewer)}`,
+        )
+        await new Promise(resolve => setTimeout(resolve, 700))
+        const opening = reads.find(read => read.open)
+        expect(opening?.end).toBeGreaterThan(0)
+        // Every read in the background began once the opening was answered,
+        // and the event was read: once, after it.
+        expect(
+          reads.filter(read => !read.open && read.start < (opening?.end ?? 0)),
+        ).toEqual([])
+        expect(
+          reads.filter(read => !read.open && read.start >= (opening?.end ?? 0))
+            .length,
+        ).toBeGreaterThanOrEqual(1)
+      } finally {
+        await tab.close()
+        server.stop(true)
+      }
+    }, 30_000)
+
+    test('a stream the hub refused is opened again, and the polling stops once it is', async () => {
+      const h = accountsHarness()
+      const member = await person(h.handle, 'member')
+      let streams = 0
+      const views: number[] = []
+      const server = Bun.serve({
+        port: 0,
+        hostname: '127.0.0.1',
+        idleTimeout: 0,
+        fetch(request) {
+          const path = new URL(request.url).pathname
+          if (path === '/v0/chat/stream') {
+            streams += 1
+            // A hub restarting behind a proxy: the first answer is the proxy's.
+            if (streams === 1)
+              return new Response('bad gateway', { status: 502 })
+          }
+          if (path.startsWith('/fragments/chat/front/view'))
+            views.push(Date.now())
+          return h.handle(request)
+        },
+      })
+      const base = `http://127.0.0.1:${server.port}`
+      const tab = await browser.tab()
+      try {
+        await tab.send('Network.setCookie', {
+          name: 'qianmo_session',
+          value: member.sid,
+          url: base,
+          httpOnly: true,
+          sameSite: 'Strict',
+        })
+        await observeChatStream(tab)
+        await tab.goto(`${base}/`)
+        // Refused: polling meanwhile, and after five seconds a new stream.
+        await tab.waitFor(
+          `document.getElementById('fx-live').textContent !== ''`,
+        )
+        await tab.waitFor(`window.__chatStreamOpen === true`, 9_000)
+        expect(streams).toBe(2)
+        await tab.waitFor(
+          `document.getElementById('fx-live').textContent === ''`,
+        )
+        const at = Date.now()
+        await new Promise(resolve => setTimeout(resolve, 3_000))
+        // No poll after the stream opened (one catch-up read at most).
+        expect(views.filter(t => t > at).length).toBe(0)
+      } finally {
+        await tab.close()
+        server.stop(true)
+      }
+    }, 30_000)
+
+    test('the box grows with its lines, shrinks back when they go, stops at 240 px and is one line empty', async () => {
+      const h = accountsHarness()
+      const member = await person(h.handle, 'member')
+      const server = Bun.serve({
+        port: 0,
+        hostname: '127.0.0.1',
+        fetch: request => h.handle(request),
+      })
+      const base = `http://127.0.0.1:${server.port}`
+      const tab = await browser.tab()
+      try {
+        await tab.send('Network.setCookie', {
+          name: 'qianmo_session',
+          value: member.sid,
+          url: base,
+          httpOnly: true,
+          sameSite: 'Strict',
+        })
+        await tab.goto(`${base}/`)
+        await tab.waitFor(`!!document.getElementById('fx-text')`)
+        const at = (value: string) =>
+          tab.evaluate<number>(`(() => {
+            const b = document.getElementById('fx-text');
+            b.value = ${JSON.stringify(value)};
+            b.dispatchEvent(new Event('input', { bubbles: true }));
+            return Math.round(b.getBoundingClientRect().height);
+          })()`)
+        const one = await at('一')
+        let text = '一'
+        const heights: number[] = []
+        for (let i = 2; i <= 4; i++) {
+          text += `\n第 ${i} 行`
+          heights.push(await at(text))
+        }
+        expect(heights[0]).toBeGreaterThan(one)
+        expect(heights[1]).toBeGreaterThan(heights[0]!)
+        expect(heights[2]).toBeGreaterThan(heights[1]!)
+        // Deleted back to one line: one line high again.
+        expect(await at('一')).toBe(one)
+        // Four lines, then one longer line pasted over all of them.
+        await at(text)
+        expect(await at('x'.repeat(text.length + 4))).toBe(one)
+        // Wrapped in a narrow box, then the box widened (a panel closed
+        // beside it, no window resize): typing on fits it to one line again.
+        await tab.evaluate(
+          `document.getElementById('fx-text').style.width = '120px'`,
+        )
+        const long = '一句不换行但在窄框里会折行的话'
+        expect(await at(long)).toBeGreaterThan(one)
+        await tab.evaluate(
+          `document.getElementById('fx-text').style.width = ''`,
+        )
+        expect(await at(`${long}。`)).toBe(one)
+        expect(await at('一\n'.repeat(40))).toBeLessThanOrEqual(240 + 2)
+        expect(await at('')).toBeLessThanOrEqual(one)
+        expect(
+          await tab.evaluate<string>(
+            `document.getElementById('fx-text').style.height`,
+          ),
+        ).toBe('')
+      } finally {
+        await tab.close()
+        server.stop(true)
+      }
+    }, 30_000)
+
     test('a welcome starts a conversation, filters survive refresh and preferences never persist credentials', async () => {
       const h = accountsHarness()
       const member = await person(h.handle, 'member')

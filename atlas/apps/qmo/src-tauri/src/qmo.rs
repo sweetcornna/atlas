@@ -36,6 +36,9 @@ pub enum ErrorKind {
     Broken,
     /// The shell's own: the hub keeps sending a fresh session to `/login`.
     Loop,
+    /// The shell's own: another entry is under way (the Code page's
+    /// reconnect, P37.16).
+    Busy,
 }
 
 impl ErrorKind {

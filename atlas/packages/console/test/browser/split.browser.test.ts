@@ -1654,6 +1654,57 @@ describe.skipIf(SKIP !== null)('one connection for the window', () => {
     STREAM_MS,
   )
 
+  test(
+    'four panes, one approvals read: the window reads the list and every pane is handed it',
+    async () => {
+      const tab = await open(browser, served, '/', {
+        store: layout(
+          [['', agent(CODER)], [agent(REVIEWER)], [agent(PLANNER)]],
+          0,
+        ),
+      })
+      try {
+        await tab.waitFor(READY(4), 15_000)
+        const reads: string[] = []
+        browser.on(
+          'Network.requestWillBeSent',
+          params => {
+            const request = params['request'] as {
+              url?: string
+              method?: string
+            }
+            if (
+              request?.method === 'GET' &&
+              String(request?.url ?? '').includes('/v0/approvals?mine=1')
+            )
+              reads.push(String(params['frameId']))
+          },
+          tab.sessionId,
+        )
+        // Two of the window's 5 s ticks, give or take one.
+        await pause(11_000)
+        expect(reads.length).toBeGreaterThanOrEqual(1)
+        expect(reads.length).toBeLessThanOrEqual(3)
+        // All from one frame: the window's.
+        expect(new Set(reads).size).toBe(1)
+        // Each pane has the window's list, and no poll of its own.
+        expect(
+          await tab.evaluate<unknown>(
+            `${FRAMES}.map(f => !!f.contentWindow.qianmoApprovals)`,
+          ),
+        ).toEqual([false, false, false, false])
+        expect(
+          await tab.evaluate<boolean>(
+            'Array.isArray(window.qianmoApprovals.items)',
+          ),
+        ).toBe(true)
+      } finally {
+        await tab.close()
+      }
+    },
+    PANES_MS,
+  )
+
   test('against it: six streams of a page’s own hold the next request back', async () => {
     // A browser of its own: the connections are per browser, and nothing
     // another test left open may count among the six.

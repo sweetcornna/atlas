@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! The app's commands go into the ACL manifest, so each needs a capability
-//! that names it: the local pages' are in `capabilities/local.json`, the hub's
+//! that names it: the local pages' are in `capabilities/local.json` (with
+//! seven of the hub's, for the shell's own Code page, P37.16), the hub's
 //! twenty-four are granted at run time to the signed-in hub's origin only.
 
 fn main() {
@@ -47,6 +48,7 @@ fn main() {
         "local_open",
         "local_close",
         "local_boot",
+        "local_reconnect",
     ];
     tauri_build::try_build(
         tauri_build::Attributes::new()

@@ -112,6 +112,21 @@ pub(crate) const HUB_COMMANDS: [&str; 24] = [
     "qmo_local_delete",
 ];
 
+/// The commands of a session that exists, which the shell's own Code page
+/// may call too (P37.16, `capabilities/local.json`): read the sessions and
+/// carry one on. Starting one, folders, changes, renaming, deleting and
+/// Remote stay the hub's page's.
+#[cfg(test)]
+pub(crate) const OFFLINE_COMMANDS: [&str; 7] = [
+    "qmo_local_list",
+    "qmo_local_watch",
+    "qmo_local_read",
+    "qmo_local_send",
+    "qmo_local_stop",
+    "qmo_local_answer",
+    "qmo_local_set_mode",
+];
+
 /// Where the traffic lights sit on macOS: the close button's left edge 17 px
 /// in, centred on the 48 px header row the pages draw. AppKit reads `y` as the
 /// inset to the buttons' row, not their middle; 26 measured as centred on 24.
@@ -167,6 +182,9 @@ struct State {
     entering: bool,
     /// Where to go once the current entry is done.
     pending: Option<String>,
+    /// `pending` is where a followed `qmo://` link goes: an entry from the
+    /// Code page keeps it rather than putting its own in.
+    linked: bool,
     reentries: Vec<Instant>,
     /// Origins that have the remote capability already.
     granted: HashSet<String>,
@@ -175,6 +193,11 @@ struct State {
     next_notification: i32,
     /// Started at login: no window until the person asks for one.
     hidden: bool,
+    /// The next entry that ends may bring the main window up: the one at
+    /// start and the one after sign-in. A retry or a reconnect in the
+    /// background never does, whatever the window is doing (closed to the
+    /// tray, the app hidden with ⌘H, another app in front).
+    reveal_next: bool,
     /// Told when the main window has finished loading `about:blank`.
     blank: Option<mpsc::Sender<()>>,
 }
@@ -222,11 +245,13 @@ impl Shell {
                 notice: None,
                 entering: false,
                 pending: None,
+                linked: false,
                 reentries: Vec::new(),
                 granted: HashSet::new(),
                 notifications: HashMap::new(),
                 next_notification: 1,
                 hidden,
+                reveal_next: false,
                 blank: None,
             }),
         }
@@ -310,6 +335,24 @@ impl Shell {
     /// The person asked for a window: from here on windows show.
     fn unhide(&self) {
         self.with(|s| s.hidden = false)
+    }
+
+    /// An entry the person is waiting to see the end of starts: at start
+    /// and on sign-in.
+    fn reveal_next(&self) {
+        self.with(|s| s.reveal_next = true)
+    }
+
+    /// The person closed the main window to the tray while an entry was
+    /// under way: its end leaves the window closed.
+    pub fn cancel_reveal(&self) {
+        self.with(|s| s.reveal_next = false)
+    }
+
+    /// Whether the entry that just ended may bring the main window up; asked
+    /// once per entry. Never when started at login.
+    fn take_reveal(&self) -> bool {
+        self.with(|s| std::mem::replace(&mut s.reveal_next, false) && !s.hidden)
     }
 }
 
@@ -533,6 +576,24 @@ fn show(window: &WebviewWindow) {
     let _ = window.set_focus();
 }
 
+/// After an entry, in or turned away: the main window comes up for the
+/// entry at start and the one after sign-in, when it is not up yet. Any
+/// other entry leaves the window as the person has it — on screen, minimised,
+/// closed to the tray, the app hidden: the offline page retries every half
+/// minute and the Code page reconnects as often, and neither may pull the
+/// window over another app or out of the tray.
+fn surface(app: &AppHandle, window: &WebviewWindow) {
+    hide(app, SIGNIN);
+    if !shell(app).take_reveal() || !needs_showing(window) {
+        return;
+    }
+    show(window);
+}
+
+fn needs_showing(window: &WebviewWindow) -> bool {
+    !window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false)
+}
+
 fn hide(app: &AppHandle, label: &str) {
     if let Some(window) = app.get_webview_window(label) {
         let _ = window.hide();
@@ -736,6 +797,20 @@ pub fn on_code_page(main: Option<&Url>, hub: Option<&Hub>) -> bool {
 pub fn open_code_session(app: &AppHandle, id: &str) {
     shell(app).unhide();
     hide_quick(app);
+    // Offline, the shell's own Code page carries the sessions (P37.16).
+    let page = app
+        .get_webview_window(MAIN)
+        .and_then(|window| window.url().ok());
+    if crate::ipc::valid_local_session(id)
+        && page.as_ref().is_some_and(crate::ipc::is_offline_code)
+        && app
+            .state::<crate::code::Code>()
+            .runner
+            .watcher()
+            .tell(&crate::code::open_event(id))
+    {
+        return show_app(app);
+    }
     let hub = shell(app).hub();
     let hub = match hub {
         Some(hub) if crate::ipc::valid_local_session(id) && shell(app).phase() == Phase::Hub => hub,
@@ -772,7 +847,10 @@ pub fn follow(app: &AppHandle, link: DeepLink) {
         DeepLink::New => "/app?work=new".to_string(),
         DeepLink::Session(id) => format!("/app?session={id}"),
     };
-    s.with(|st| st.pending = Some(path));
+    s.with(|st| {
+        st.pending = Some(path);
+        st.linked = true;
+    });
     show_app(app);
 }
 
@@ -934,6 +1012,7 @@ const FIRST_PAINT: Duration = Duration::from_millis(800);
 /// still busy after a moment (a hub slow to answer) gets the skeleton too.
 pub fn start(app: &AppHandle) {
     let s = shell(app);
+    s.reveal_next();
     let remembered = s.settings().hub.and_then(|h| parse_hub(&h).ok());
     if let Some(hub) = remembered {
         s.with(|st| st.hub = Some(hub));
@@ -973,6 +1052,7 @@ pub fn enter(app: &AppHandle, back: Option<String>, reentry: bool) {
         }
         if back.is_some() {
             st.pending = back.clone();
+            st.linked = false;
         }
         if st.entering {
             return false;
@@ -1033,16 +1113,14 @@ fn arrive(app: &AppHandle, session: Session) {
         st.login_page = false;
         st.phase = Phase::Hub;
         st.problem = None;
+        st.linked = false;
         st.pending.take()
     });
     let target = back
         .map(|path| hub.join(&path))
         .unwrap_or_else(|| hub.app_url());
     load_in_main(app, &window, target);
-    hide(app, SIGNIN);
-    if s.reveal() {
-        show(&window);
-    }
+    surface(app, &window);
     if let Err(e) = ensure_quick(app, &hub) {
         eprintln!("qmo: quick entry: {e}");
     }
@@ -1058,8 +1136,16 @@ fn turned_away(app: &AppHandle, failure: Failure) {
         s.with(|st| {
             st.phase = Phase::SignedOut;
             st.pending = None;
+            st.linked = false;
             st.problem = (failure.kind != ErrorKind::SignedOut).then(|| Problem::from(&failure));
         });
+        // What the hidden main window showed (the offline page, the Code
+        // page) stops retrying: the way on is sign-in.
+        if let Some(window) = app.get_webview_window(MAIN) {
+            let _ = window.navigate(
+                Url::parse(&format!("{}skeleton.html", local_base())).expect("local url"),
+            );
+        }
         show_signin(app);
         return;
     }
@@ -1073,8 +1159,8 @@ fn turned_away(app: &AppHandle, failure: Failure) {
                 st.problem = None;
             });
             navigate_main(app, hub.login_url());
-            if s.reveal() {
-                show_app(app);
+            if let Ok(window) = ensure_main(app) {
+                surface(app, &window);
             }
             return;
         }
@@ -1086,10 +1172,125 @@ fn turned_away(app: &AppHandle, failure: Failure) {
         st.phase = Phase::Offline;
         st.problem = Some(Problem::from(&failure));
     });
-    show_local_in_main(app, "offline.html");
-    if s.reveal() {
-        show_app(app);
+    // The shell's own Code page stays: its sessions go on without the hub,
+    // and it says why it is still out of reach (P37.16).
+    if !main_shows_offline_code(app) {
+        show_local_in_main(app, "offline.html");
     }
+    if let Ok(window) = ensure_main(app) {
+        surface(app, &window);
+    }
+}
+
+fn main_shows_offline_code(app: &AppHandle) -> bool {
+    app.get_webview_window(MAIN)
+        .and_then(|window| window.url().ok())
+        .is_some_and(|url| crate::ipc::is_offline_code(&url))
+}
+
+/// The offline page's 打开本机会话 (P37.16): the shell's own Code page in
+/// the main window, while the hub is out of reach. Signed in to a hub that
+/// is open, it is the hub's `/code`; signed out, sign-in.
+pub fn open_offline_code(app: &AppHandle) {
+    let s = shell(app);
+    s.unhide();
+    match s.phase() {
+        Phase::Offline => show_local_in_main(app, "code.html"),
+        Phase::Hub => match s.hub() {
+            Some(hub) => {
+                show_app(app);
+                navigate_main(app, hub.join("/code"));
+            }
+            None => show_app(app),
+        },
+        _ => show_app(app),
+    }
+}
+
+/// What `reconnect` found on taking the shell's state.
+enum Claim {
+    Go,
+    In(Option<Hub>),
+    Refused(Problem),
+}
+
+/// From the shell's own Code page: try the hub again without leaving it
+/// (P37.16). In, the main window goes to the hub's `/code` (on `session`,
+/// already checked); turned away for good — the pairing gone, a hub without
+/// tickets — as any entry is; still out of reach, the page stays and is
+/// told why. Only while offline; an entry already under way answers `busy`.
+/// Blocking.
+pub fn reconnect(app: &AppHandle, session: Option<String>) -> Result<(), Problem> {
+    let s = shell(app);
+    let path = match &session {
+        Some(id) => format!("/code?session={id}"),
+        None => "/code".to_string(),
+    };
+    // The phase looked at and the entry taken under one lock.
+    let claim = s.with(|st| match st.phase {
+        Phase::Offline if !st.entering => {
+            st.entering = true;
+            // A deep link followed meanwhile keeps its place; anything else
+            // (an earlier reconnect's, a /login re-entry's) is this one's now.
+            if !st.linked {
+                st.pending = Some(path.clone());
+            }
+            st.phase = Phase::Entering;
+            Claim::Go
+        }
+        // In already (a retry elsewhere got there): to the hub's Code.
+        Phase::Hub => Claim::In(st.hub.clone()),
+        Phase::SignedOut => Claim::Refused(Problem {
+            kind: ErrorKind::SignedOut,
+            message: "signed out".into(),
+        }),
+        _ => Claim::Refused(Problem {
+            kind: ErrorKind::Busy,
+            message: "an entry is under way".into(),
+        }),
+    });
+    match claim {
+        Claim::Go => {}
+        Claim::In(hub) => {
+            if let Some(hub) = hub {
+                navigate_main(app, hub.join(&path));
+            }
+            return Ok(());
+        }
+        Claim::Refused(problem) => return Err(problem),
+    }
+    let outcome = run_qmo::<Session>(&["session", "--json"], None);
+    let result = match outcome {
+        // `arrive` may still turn it away (a hub address or cookie it
+        // cannot use); the phase says how it went.
+        Ok(session) => {
+            arrive(app, session);
+            match s.phase() {
+                Phase::Hub => Ok(()),
+                _ => Err(s.problem().unwrap_or(Problem {
+                    kind: ErrorKind::Broken,
+                    message: "not in".into(),
+                })),
+            }
+        }
+        Err(failure) => {
+            let problem = Problem::from(&failure);
+            turned_away(app, failure);
+            Err(problem)
+        }
+    };
+    // Not in, however it went (qmo, or arrive turning it away): its place is
+    // not where the next entry goes. The page may be on another session by
+    // then, and asks again with its own.
+    if result.is_err() {
+        s.with(|st| {
+            if !st.linked && st.pending.as_deref() == Some(path.as_str()) {
+                st.pending = None;
+            }
+        });
+    }
+    s.with(|st| st.entering = false);
+    result
 }
 
 /// The local sign-in page: pair through `qmo sign-in`, the code on standard
@@ -1124,6 +1325,7 @@ pub fn sign_in(app: &AppHandle, raw_hub: &str, code: &str) -> Result<(), Problem
         st.reentries.clear();
     });
     s.unhide();
+    s.reveal_next();
     if let Ok(window) = ensure_main(app) {
         let _ = window
             .navigate(Url::parse(&format!("{}skeleton.html", local_base())).expect("local url"));
@@ -1169,6 +1371,7 @@ pub fn sign_out(app: &AppHandle) -> SignOutReport {
         st.login_page = false;
         st.problem = None;
         st.pending = None;
+        st.linked = false;
         st.reentries.clear();
         st.notice = (!revoked).then(|| result.clone());
     });
@@ -1339,7 +1542,7 @@ mod tests {
     }
 
     #[test]
-    fn the_local_pages_get_none_of_the_hubs_commands() {
+    fn the_local_pages_get_only_the_commands_of_a_session_that_exists() {
         let local: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/local.json")).unwrap();
         assert_eq!(local["local"], true);
@@ -1352,9 +1555,33 @@ mod tests {
             .collect();
         for command in HUB_COMMANDS {
             let permission = format!("allow-{}", command.replace('_', "-"));
-            assert!(!permissions.contains(&permission.as_str()), "{command}");
+            assert_eq!(
+                permissions.contains(&permission.as_str()),
+                OFFLINE_COMMANDS.contains(&command),
+                "{command}"
+            );
         }
+        // Nothing that starts a session, picks a folder, reads the files,
+        // renames, deletes, turns Remote on or asks for the agents.
+        for command in [
+            "qmo_local_start",
+            "qmo_local_pick_folder",
+            "qmo_local_forget_folder",
+            "qmo_local_changes",
+            "qmo_local_diff",
+            "qmo_local_rename",
+            "qmo_local_delete",
+            "qmo_local_set_remote",
+            "qmo_local_agents",
+            "qmo_sign_out",
+        ] {
+            assert!(!OFFLINE_COMMANDS.contains(&command), "{command}");
+        }
+        assert!(OFFLINE_COMMANDS.iter().all(|c| HUB_COMMANDS.contains(c)));
         assert!(permissions.contains(&"allow-local-boot"));
+        assert!(permissions.contains(&"allow-local-reconnect"));
+        assert!(include_str!("../build.rs").contains("\"local_reconnect\""));
+        assert!(include_str!("lib.rs").contains("commands::local_reconnect,"));
         // Every command the shell declares is the hub's or a local page's.
         let build = include_str!("../build.rs");
         for command in HUB_COMMANDS {
@@ -1413,7 +1640,9 @@ mod tests {
         assert!(branch.contains(
             "if label == MAIN {\n                    crate::code::forget_watcher(&load_app);"
         ));
-        // Every local-session command checks its caller and its arguments.
+        // Every local-session command checks its caller and its arguments:
+        // the seven of a session that exists let the shell's own Code page
+        // in too, the others only the hub's page.
         for command in &local {
             let start = commands.find(&format!("pub async fn {command}(")).unwrap();
             let body = &commands[start..];
@@ -1421,11 +1650,15 @@ mod tests {
                 .find("\n#[tauri::command]")
                 .map_or(body.len(), |e| e + 1);
             let flat: String = body[..end].split_whitespace().collect();
-            assert!(
-                flat.contains("local_body(&app,&webview,&request"),
-                "{command}"
-            );
+            let check = if OFFLINE_COMMANDS.contains(command) {
+                "session_body(&app,&webview,&request"
+            } else {
+                "local_body(&app,&webview,&request"
+            };
+            assert!(flat.contains(check), "{command}");
         }
+        assert!(commands.contains("ipc::session_caller(page.as_ref()"));
+        assert!(commands.contains("ipc::local_caller(page.as_ref()"));
     }
 
     #[test]
@@ -1475,7 +1708,13 @@ mod tests {
             for permission in capability["permissions"].as_array().unwrap() {
                 let permission = permission.as_str().unwrap();
                 assert!(!plugin(permission), "{path:?}: {permission}");
-                assert!(!permission.contains("qmo-local"), "{path:?}: {permission}");
+                if let Some(command) = permission.strip_prefix("allow-qmo-") {
+                    let command = format!("qmo_{}", command.replace('-', "_"));
+                    assert!(
+                        OFFLINE_COMMANDS.contains(&command.as_str()),
+                        "{path:?}: {permission}"
+                    );
+                }
             }
             assert!(!text.contains("dialog:"), "{path:?}");
             assert!(!text.contains("fs:"), "{path:?}");
@@ -1486,6 +1725,84 @@ mod tests {
         let lib = include_str!("lib.rs");
         assert!(lib.contains(".plugin(code::Quiet(tauri_plugin_dialog::init()))"));
         assert_eq!(lib.matches("tauri_plugin_dialog::init()").count(), 1);
+    }
+
+    #[test]
+    fn only_the_entry_at_start_or_after_sign_in_brings_the_window_up() {
+        let dir = std::env::temp_dir().join(format!("qmo-surface-{}", std::process::id()));
+        let shell = Shell::new(Lang::En, "0".into(), dir.join("settings.json"), false);
+        // A retry or a reconnect in the background: never.
+        assert!(!shell.take_reveal());
+        // The entry at start: once.
+        shell.reveal_next();
+        assert!(shell.take_reveal());
+        assert!(!shell.take_reveal());
+        // Settings, About, the tray: the person asked for a window, not for
+        // the next retry to raise the main one.
+        shell.unhide();
+        assert!(!shell.take_reveal());
+        // Started at login: nothing comes up by itself.
+        let login = Shell::new(Lang::En, "0".into(), dir.join("settings.json"), true);
+        login.reveal_next();
+        assert!(!login.take_reveal());
+        // Closed to the tray while the entry at start was under way: it
+        // stays closed when the entry ends.
+        shell.reveal_next();
+        shell.cancel_reveal();
+        assert!(!shell.take_reveal());
+        assert!(include_str!("lib.rs").contains("app.state::<Shell>().cancel_reveal();"));
+        // Every entry's end goes through `surface`, which also leaves a
+        // window on screen or minimised alone; start and sign-in ask for it.
+        let source = include_str!("shell.rs");
+        let body = |name: &str| {
+            let start = source.find(&format!("fn {name}(")).unwrap();
+            let rest = &source[start..];
+            rest[..rest.find("\n}\n").unwrap()].to_string()
+        };
+        assert!(!body("arrive").contains("show(&window)"));
+        assert!(!body("turned_away").contains("show_app("));
+        assert_eq!(
+            body("turned_away").matches("surface(app, &window)").count(),
+            2
+        );
+        assert!(body("arrive").contains("surface(app, &window)"));
+        assert!(body("needs_showing").contains("is_minimized"));
+        assert!(body("start").contains("s.reveal_next();"));
+        assert!(body("sign_in").contains("s.reveal_next();"));
+        // A retry and a reconnect do not.
+        assert!(!body("retry").contains("reveal_next"));
+        assert!(!body("reconnect").contains("reveal_next"));
+        // A reconnect puts its own place in unless a followed link is waiting,
+        // and takes it back out when it fails; a link marks itself.
+        let reconnect = body("reconnect");
+        assert!(
+            reconnect.contains("if !st.linked {\n                st.pending = Some(path.clone());")
+        );
+        assert!(
+            reconnect.contains("if !st.linked && st.pending.as_deref() == Some(path.as_str()) {")
+        );
+        assert!(body("follow").contains("st.linked = true;"));
+        assert!(body("arrive").contains("st.linked = false;"));
+    }
+
+    #[test]
+    fn the_offline_code_page_is_one_of_the_shells_pages() {
+        // What 打开本机会话 shows, and the one local page the session
+        // commands answer (`ipc::session_caller`).
+        let page = include_str!("../../ui/code.html");
+        assert_eq!(crate::ipc::OFFLINE_CODE, "/code.html");
+        assert!(page.contains(r#"<script src="code-render.js"></script>"#));
+        assert!(page.contains(r#"<script type="module" src="code.js"></script>"#));
+        let shell = include_str!("shell.rs");
+        assert!(shell.contains("Phase::Offline => show_local_in_main(app, \"code.html\"),"));
+        let offline = include_str!("../../ui/offline.js");
+        assert!(offline.contains("invoke('local_open', { target: 'code' })"));
+        let commands = include_str!("commands.rs");
+        assert!(commands.contains("\"code\" => shell::open_offline_code(&app),"));
+        // Still out of reach, an entry leaves the page where it is.
+        assert!(shell.contains(
+            "if !main_shows_offline_code(app) {\n        show_local_in_main(app, \"offline.html\");"
+        ));
     }
 
     #[test]
