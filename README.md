@@ -74,6 +74,7 @@
 ### 能接入一切
 
 - 客户端：除了浏览器，Windows 与 Linux 上有客户端 `qmo`，配对后一条命令打开前台；macOS 上有桌面版 Qmo，原生窗口里是对话界面 `/app` 与智能体界面 `/`，另有全局快捷键唤出的快速输入。桌面版只在 macOS 本机构建和运行过，v3.1.1 起在 GitHub 发行页附 macOS（Apple 芯片）的 `.dmg`，没有 Developer ID 签名与公证，Windows 与 Linux 还没有安装包；`qmo` 在 Windows 上只在 CI 里跑过。
+- 桌面版的 Work 与 Code：主窗口分 Work 与 Code 两种模式，管理后台收成一张设置卡片，同一窗口可以分栏。Work 里每人跟每个智能体一条常驻会话，「开始一项工作」按演示文稿、文档、表格等六个工作流交给智能体，交付文件可以预览与下载。Code 里用这台电脑上用户自己登录的 Claude Code、Codex、Gemini CLI、Qwen Code、opencode、dsh 开本机会话，会话不经过中枢；单个会话可以打开 Remote，在同一账号的其他设备上续写；中枢连不上时也能打开本机会话。两种模式与设置卡片已部署到内测环境；本机会话、Remote、离线打开、Work 与分栏只在假进程、假模型与浏览器测试里验过，Qmo.app 里用真的 agent 还没有实测，v3.1.1 的 `.dmg` 里也没有它们。
 - 聊天渠道：QQ（开放平台官方机器人）、微信、Telegram、Discord、Slack。消息进对应智能体的会话，回复送回原聊天；连接都由中枢拨出，不开入站端口。个人 QQ 经用户自己运行的 SnowLuma（OneBot 11）接入，SnowLuma 本身限非商用，公开版不提供这个渠道。各渠道都还没有用真实账号实测。
 - 扩展：在控制台给智能体装 MCP 连接器、技能与插件，各底层按自己的原生方式加载，密钥由中枢封存。还没有用真实的 MCP 服务和插件仓库跑过整轮。
 - 应用连接：邮件、日历与 GitHub 仓库。邮件与日历的凭据只留在中枢，节点上的智能体经中枢调用，发信、建日程每次都要批准；目前只对测试服务器验证过。
@@ -215,12 +216,15 @@ bun test --preload ./atlas/tests/preload.ts ./atlas/packages/<包>/test/<名>.te
 | [公开版](docs/dev/public-edition.md) | 订阅制部署形态 |
 | [智能体改设置](docs/dev/agent-settings.md) | 设置目录、改设置工具与确认 |
 | [客户端](docs/dev/clients.md) | Windows 与 Linux 客户端 `qmo` |
-| [桌面版](docs/dev/qmo-app.md) | Tauri 壳、对话界面与快速输入 |
+| [桌面版](docs/dev/qmo-app.md) | Tauri 壳、对话界面与快速输入、分栏 |
+| [本机开发](docs/dev/qmo-local.md) | Work 与 Code 两种模式、本机会话、Remote、离线打开 Code |
+| [Work](docs/dev/work-tasks.md) | 常驻会话与「开始一项工作」 |
 | [接力接法](docs/dev/handoff-usage.md) | 本机编程工具与节点的配对和接力 |
 | [演示环境](docs/dev/demo-env.md) | 本地演示拓扑 |
 | [基座改动清单](docs/dev/base-modifications.md) | 对基座文件的修改与删除登记 |
-| [v3.1.1 发行说明](docs/dev/release-v3.1.1.md) | 最近一次 GitHub 发行：桌面版 macOS 安装包与壳的许可声明 |
-| [v3.1.0 发行说明](docs/dev/release-v3.1.0.md) | 上一次完整发行的改动、部署与已知问题 |
+| [v3.2.0 发行说明](docs/dev/release-v3.2.0.md) | 最近一次 GitHub 发行：Work 与 Code 两种模式、本机会话、Remote、分栏，改动、部署与已知问题 |
+| [v3.1.1 发行说明](docs/dev/release-v3.1.1.md) | 桌面版 macOS 安装包与壳的许可声明 |
+| [v3.1.0 发行说明](docs/dev/release-v3.1.0.md) | v3.1.0 的改动、部署与已知问题 |
 
 ## 安全
 
