@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "local",
-  "description": "The shell's own pages (sign-in, skeleton, offline, settings, about). Local URLs only; the hub's origin gets its nine commands at run time.",
+  "description": "The shell's own pages (sign-in, skeleton, offline, settings, about, and the Code page that carries local sessions on while the hub is out of reach). Local URLs only; the hub's origin gets its commands at run time. The seven qmo-local permissions are the commands of a session that exists; each checks that its caller is the hub's page or the shell's own code.html in the main window.",
   "local": true,
   "windows": ["main", "signin", "settings", "about"],
   "permissions": [
@@ -19,6 +19,14 @@
     "allow-local-sign-out",
     "allow-local-open",
     "allow-local-close",
-    "allow-local-boot"
+    "allow-local-boot",
+    "allow-local-reconnect",
+    "allow-qmo-local-list",
+    "allow-qmo-local-watch",
+    "allow-qmo-local-read",
+    "allow-qmo-local-send",
+    "allow-qmo-local-stop",
+    "allow-qmo-local-answer",
+    "allow-qmo-local-set-mode"
   ]
 }

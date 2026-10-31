@@ -9,7 +9,9 @@
 //! added for P37.13 also check that the calling page is on the hub's origin,
 //! and the fifteen `qmo_local_*` of local sessions (P37.14a, P37.14d) that it
 //! is the main window's. The `local_*` commands are the shell's own pages'
-//! (`capabilities/local.json`), never the hub's. Nothing else — no file
+//! (`capabilities/local.json`), never the hub's; so are seven `qmo_local_*`
+//! of a session that exists, for the shell's own Code page when the hub is
+//! out of reach (P37.16, `shell::OFFLINE_COMMANDS`). Nothing else — no file
 //! system, shell, dialog or HTTP plugin — is exposed.
 
 use std::str::FromStr;
@@ -190,8 +192,10 @@ pub async fn qmo_open_local_settings(
 
 // ---- local sessions (qmo-local.md §4.5) -----------------------------------
 
-/// Every `qmo_local_*` call: from the hub's page in the main window, with a
-/// JSON body. Failures read `qmo local <code>: <message>`.
+/// A `qmo_local_*` call that only the hub's page makes — a new session, a
+/// folder, the changes, renaming, deleting, Remote: from the hub's page in
+/// the main window, with a JSON body. Failures read
+/// `qmo local <code>: <message>`.
 fn local_body(
     app: &AppHandle,
     webview: &tauri::Webview,
@@ -200,6 +204,23 @@ fn local_body(
     let shell = app.state::<Shell>();
     let page = webview.url().ok();
     ipc::local_caller(page.as_ref(), shell.hub().as_ref(), webview.label())
+        .and_then(|()| match request.body() {
+            InvokeBody::Json(value) => Ok(value.clone()),
+            InvokeBody::Raw(_) => Err(ipc::Invalid("arguments must be JSON".into())),
+        })
+        .map_err(|e| Refusal::from(e).to_string())
+}
+
+/// The calls of a session that exists (`shell::OFFLINE_COMMANDS`): from the
+/// hub's page or the shell's own Code page (P37.16), in the main window.
+fn session_body(
+    app: &AppHandle,
+    webview: &tauri::Webview,
+    request: &tauri::ipc::Request<'_>,
+) -> Result<Value, String> {
+    let shell = app.state::<Shell>();
+    let page = webview.url().ok();
+    ipc::session_caller(page.as_ref(), shell.hub().as_ref(), webview.label())
         .and_then(|()| match request.body() {
             InvokeBody::Json(value) => Ok(value.clone()),
             InvokeBody::Raw(_) => Err(ipc::Invalid("arguments must be JSON".into())),
@@ -231,7 +252,7 @@ pub async fn qmo_local_list(
     webview: tauri::Webview,
     request: tauri::ipc::Request<'_>,
 ) -> Result<Box<RawValue>, String> {
-    let call = checked(ipc::local_list(&local_body(&app, &webview, &request)?))?;
+    let call = checked(ipc::local_list(&session_body(&app, &webview, &request)?))?;
     let defaults = app.state::<Shell>().settings().code;
     let answer = forward(app, call).await?;
     Ok(code::with_defaults(answer, &defaults.mode, defaults.remote))
@@ -245,7 +266,7 @@ pub async fn qmo_local_watch(
     webview: tauri::Webview,
     request: tauri::ipc::Request<'_>,
 ) -> Result<Value, String> {
-    let channel = checked(ipc::local_watch(&local_body(&app, &webview, &request)?))?;
+    let channel = checked(ipc::local_watch(&session_body(&app, &webview, &request)?))?;
     let id = JavaScriptChannelId::from_str(&channel)
         .map_err(|e| Refusal::new("E_ARGS", e).to_string())?;
     app.state::<Code>()
@@ -321,7 +342,7 @@ pub async fn qmo_local_send(
     webview: tauri::Webview,
     request: tauri::ipc::Request<'_>,
 ) -> Result<Box<RawValue>, String> {
-    let call = checked(ipc::local_send(&local_body(&app, &webview, &request)?))?;
+    let call = checked(ipc::local_send(&session_body(&app, &webview, &request)?))?;
     forward(app, call).await
 }
 
@@ -331,7 +352,7 @@ pub async fn qmo_local_stop(
     webview: tauri::Webview,
     request: tauri::ipc::Request<'_>,
 ) -> Result<Box<RawValue>, String> {
-    let call = checked(ipc::local_stop(&local_body(&app, &webview, &request)?))?;
+    let call = checked(ipc::local_stop(&session_body(&app, &webview, &request)?))?;
     forward(app, call).await
 }
 
@@ -341,7 +362,7 @@ pub async fn qmo_local_answer(
     webview: tauri::Webview,
     request: tauri::ipc::Request<'_>,
 ) -> Result<Box<RawValue>, String> {
-    let call = checked(ipc::local_answer(&local_body(&app, &webview, &request)?))?;
+    let call = checked(ipc::local_answer(&session_body(&app, &webview, &request)?))?;
     forward(app, call).await
 }
 
@@ -352,7 +373,9 @@ pub async fn qmo_local_set_mode(
     webview: tauri::Webview,
     request: tauri::ipc::Request<'_>,
 ) -> Result<Box<RawValue>, String> {
-    let call = checked(ipc::local_set_mode(&local_body(&app, &webview, &request)?))?;
+    let call = checked(ipc::local_set_mode(&session_body(
+        &app, &webview, &request,
+    )?))?;
     forward(app, call).await
 }
 
@@ -363,7 +386,7 @@ pub async fn qmo_local_read(
     webview: tauri::Webview,
     request: tauri::ipc::Request<'_>,
 ) -> Result<Box<RawValue>, String> {
-    let call = checked(ipc::local_read(&local_body(&app, &webview, &request)?))?;
+    let call = checked(ipc::local_read(&session_body(&app, &webview, &request)?))?;
     forward(app, call).await
 }
 
@@ -593,9 +616,43 @@ pub fn local_open(app: AppHandle, target: String) -> Result<(), String> {
         "settings" => shell::open_settings(&app),
         "hub" => shell::open_hub_in_browser(&app),
         "app" => shell::show_app(&app),
+        "code" => shell::open_offline_code(&app),
         _ => return Err("unknown target".into()),
     }
     Ok(())
+}
+
+/// From the shell's own Code page: try the hub again without leaving it
+/// (P37.16). In, the main window goes to the hub's `/code`, on `session`
+/// when given; still out of reach, the page stays and gets the reason.
+#[tauri::command]
+pub async fn local_reconnect(
+    app: AppHandle,
+    webview: tauri::Webview,
+    session: Option<String>,
+) -> Result<(), Problem> {
+    let page = webview.url().ok();
+    if webview.label() != MAIN || !page.as_ref().is_some_and(ipc::is_offline_code) {
+        return Err(Problem {
+            kind: crate::qmo::ErrorKind::Usage,
+            message: "only the shell's Code page reconnects".into(),
+        });
+    }
+    if session
+        .as_deref()
+        .is_some_and(|id| !ipc::valid_local_session(id))
+    {
+        return Err(Problem {
+            kind: crate::qmo::ErrorKind::Usage,
+            message: "session must be cs_ and 22 more".into(),
+        });
+    }
+    tauri::async_runtime::spawn_blocking(move || shell::reconnect(&app, session))
+        .await
+        .map_err(|e| Problem {
+            kind: crate::qmo::ErrorKind::Broken,
+            message: e.to_string(),
+        })?
 }
 
 /// The settings and about windows close themselves from their page.

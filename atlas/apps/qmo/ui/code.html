@@ -1,0 +1,75 @@
+<!doctype html>
+<!-- Copyright 2026 Qianmo AgentNest Team -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title></title>
+<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="code.css">
+<script src="code-render.js"></script>
+<script type="module" src="code.js"></script>
+</head>
+<!--
+  The shell's own Code page (P37.16, qmo-local.md §8): what the offline page's
+  打开本机会话 opens when the hub is out of reach. It shows this computer's
+  sessions and carries one on — read, send, stop, answer an ask, change the
+  mode — straight to the runner through the shell, as the hub's /code does.
+  New sessions, folders, the changes panel, renaming, deleting and Remote are
+  the hub's page's. The records are drawn by the console's own CODE_RENDER_JS,
+  which build-app.ts copies in as code-render.js; this page is not a copy of
+  the web app. Reconnecting goes back to the hub's /code on the same session.
+-->
+<body class="loading">
+<div class="code">
+  <aside class="code-side">
+    <header class="code-side-head" data-tauri-drag-region>
+      <span id="mark"></span>
+      <span class="code-side-title" data-i18n="code.title"></span>
+    </header>
+    <nav class="code-sessions" id="sessions"></nav>
+  </aside>
+  <main class="code-main">
+    <header class="code-head" data-tauri-drag-region>
+      <span class="code-head-title" id="title"></span>
+      <span class="code-head-sub" id="sub"></span>
+    </header>
+    <div class="code-offline">
+      <span class="code-offline-dot" aria-hidden="true"></span>
+      <span class="code-offline-word" id="offline" role="status" data-i18n="code.offline"></span>
+      <button class="btn btn-secondary btn-small" id="reconnect" type="button" data-i18n="code.reconnect"></button>
+    </div>
+    <div class="code-scroll" id="scroll">
+      <div class="code-column">
+        <div class="fx-msgs" id="msgs"></div>
+        <p class="code-empty" id="empty"></p>
+      </div>
+    </div>
+    <div class="code-dock" id="dock" hidden>
+      <div class="code-column">
+        <form class="code-box" id="box" novalidate>
+          <textarea class="code-text" id="text" rows="1" spellcheck="false" maxlength="65536" aria-describedby="say"></textarea>
+          <div class="code-tools">
+            <span class="code-select"><select id="mode"></select><svg class="i-sm chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></span>
+            <span class="code-gap"></span>
+            <button type="button" class="code-send code-stop" id="stop" hidden><svg class="i-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>
+            <button type="submit" class="code-send" id="go"><svg class="i-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></button>
+          </div>
+          <p class="code-say" id="say" role="status"></p>
+        </form>
+        <p class="code-confirm" id="bypass" role="alert" hidden>
+          <span data-i18n="code.bypass"></span>
+          <button type="button" class="btn btn-danger btn-small" id="bypass-ok" data-i18n="code.confirm"></button>
+          <button type="button" class="btn btn-ghost btn-small" id="bypass-no" data-i18n="settings.code.cancel"></button>
+        </p>
+      </div>
+    </div>
+  </main>
+</div>
+<!-- The icons code-render.js clones, as the hub's /code carries them
+     (console view/frontCode.ts); the shell's own markup, never parsed from a
+     string. -->
+<template id="code-icons"><i data-i="check"><svg class="i-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg></i><i data-i="x"><svg class="i-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></i><i data-i="alert-triangle"><svg class="i-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></i><i data-i="list-checks"><svg class="i-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/></svg></i><i data-i="copy"><svg class="i-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg></i><i data-i="chev"><svg class="i-sm chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></i></template>
+</body>
+</html>

@@ -112,6 +112,21 @@ pub(crate) const HUB_COMMANDS: [&str; 24] = [
     "qmo_local_delete",
 ];
 
+/// The commands of a session that exists, which the shell's own Code page
+/// may call too (P37.16, `capabilities/local.json`): read the sessions and
+/// carry one on. Starting one, folders, changes, renaming, deleting and
+/// Remote stay the hub's page's.
+#[cfg(test)]
+pub(crate) const OFFLINE_COMMANDS: [&str; 7] = [
+    "qmo_local_list",
+    "qmo_local_watch",
+    "qmo_local_read",
+    "qmo_local_send",
+    "qmo_local_stop",
+    "qmo_local_answer",
+    "qmo_local_set_mode",
+];
+
 /// Where the traffic lights sit on macOS: the close button's left edge 17 px
 /// in, centred on the 48 px header row the pages draw. AppKit reads `y` as the
 /// inset to the buttons' row, not their middle; 26 measured as centred on 24.
@@ -736,6 +751,20 @@ pub fn on_code_page(main: Option<&Url>, hub: Option<&Hub>) -> bool {
 pub fn open_code_session(app: &AppHandle, id: &str) {
     shell(app).unhide();
     hide_quick(app);
+    // Offline, the shell's own Code page carries the sessions (P37.16).
+    let page = app
+        .get_webview_window(MAIN)
+        .and_then(|window| window.url().ok());
+    if crate::ipc::valid_local_session(id)
+        && page.as_ref().is_some_and(crate::ipc::is_offline_code)
+        && app
+            .state::<crate::code::Code>()
+            .runner
+            .watcher()
+            .tell(&crate::code::open_event(id))
+    {
+        return show_app(app);
+    }
     let hub = shell(app).hub();
     let hub = match hub {
         Some(hub) if crate::ipc::valid_local_session(id) && shell(app).phase() == Phase::Hub => hub,
@@ -1086,10 +1115,89 @@ fn turned_away(app: &AppHandle, failure: Failure) {
         st.phase = Phase::Offline;
         st.problem = Some(Problem::from(&failure));
     });
-    show_local_in_main(app, "offline.html");
+    // The shell's own Code page stays: its sessions go on without the hub,
+    // and it says why it is still out of reach (P37.16).
+    if !main_shows_offline_code(app) {
+        show_local_in_main(app, "offline.html");
+    }
     if s.reveal() {
         show_app(app);
     }
+}
+
+fn main_shows_offline_code(app: &AppHandle) -> bool {
+    app.get_webview_window(MAIN)
+        .and_then(|window| window.url().ok())
+        .is_some_and(|url| crate::ipc::is_offline_code(&url))
+}
+
+/// The offline page's 打开本机会话 (P37.16): the shell's own Code page in
+/// the main window, while the hub is out of reach. Signed in to a hub that
+/// is open, it is the hub's `/code`; signed out, sign-in.
+pub fn open_offline_code(app: &AppHandle) {
+    let s = shell(app);
+    s.unhide();
+    match s.phase() {
+        Phase::Offline => show_local_in_main(app, "code.html"),
+        Phase::Hub => match s.hub() {
+            Some(hub) => {
+                show_app(app);
+                navigate_main(app, hub.join("/code"));
+            }
+            None => show_app(app),
+        },
+        _ => show_app(app),
+    }
+}
+
+/// From the shell's own Code page: try the hub again without leaving it
+/// (P37.16). In, the main window goes to the hub's `/code` (on `session`,
+/// already checked); turned away for good — the pairing gone, a hub without
+/// tickets — as any entry is; still out of reach, the page stays and is
+/// told why. An entry already under way answers `throttled`. Blocking.
+pub fn reconnect(app: &AppHandle, session: Option<String>) -> Result<(), Problem> {
+    let s = shell(app);
+    let path = match &session {
+        Some(id) => format!("/code?session={id}"),
+        None => "/code".to_string(),
+    };
+    let go = s.with(|st| {
+        if st.entering {
+            return false;
+        }
+        st.entering = true;
+        st.pending = Some(path);
+        st.phase = Phase::Entering;
+        true
+    });
+    if !go {
+        return Err(Problem {
+            kind: ErrorKind::Throttled,
+            message: "an entry is under way".into(),
+        });
+    }
+    let outcome = run_qmo::<Session>(&["session", "--json"], None);
+    let result = match outcome {
+        // `arrive` may still turn it away (a hub address or cookie it
+        // cannot use); the phase says how it went.
+        Ok(session) => {
+            arrive(app, session);
+            match s.phase() {
+                Phase::Hub => Ok(()),
+                _ => Err(s.problem().unwrap_or(Problem {
+                    kind: ErrorKind::Broken,
+                    message: "not in".into(),
+                })),
+            }
+        }
+        Err(failure) => {
+            let problem = Problem::from(&failure);
+            turned_away(app, failure);
+            Err(problem)
+        }
+    };
+    s.with(|st| st.entering = false);
+    result
 }
 
 /// The local sign-in page: pair through `qmo sign-in`, the code on standard
@@ -1339,7 +1447,7 @@ mod tests {
     }
 
     #[test]
-    fn the_local_pages_get_none_of_the_hubs_commands() {
+    fn the_local_pages_get_only_the_commands_of_a_session_that_exists() {
         let local: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/local.json")).unwrap();
         assert_eq!(local["local"], true);
@@ -1352,9 +1460,33 @@ mod tests {
             .collect();
         for command in HUB_COMMANDS {
             let permission = format!("allow-{}", command.replace('_', "-"));
-            assert!(!permissions.contains(&permission.as_str()), "{command}");
+            assert_eq!(
+                permissions.contains(&permission.as_str()),
+                OFFLINE_COMMANDS.contains(&command),
+                "{command}"
+            );
         }
+        // Nothing that starts a session, picks a folder, reads the files,
+        // renames, deletes, turns Remote on or asks for the agents.
+        for command in [
+            "qmo_local_start",
+            "qmo_local_pick_folder",
+            "qmo_local_forget_folder",
+            "qmo_local_changes",
+            "qmo_local_diff",
+            "qmo_local_rename",
+            "qmo_local_delete",
+            "qmo_local_set_remote",
+            "qmo_local_agents",
+            "qmo_sign_out",
+        ] {
+            assert!(!OFFLINE_COMMANDS.contains(&command), "{command}");
+        }
+        assert!(OFFLINE_COMMANDS.iter().all(|c| HUB_COMMANDS.contains(c)));
         assert!(permissions.contains(&"allow-local-boot"));
+        assert!(permissions.contains(&"allow-local-reconnect"));
+        assert!(include_str!("../build.rs").contains("\"local_reconnect\""));
+        assert!(include_str!("lib.rs").contains("commands::local_reconnect,"));
         // Every command the shell declares is the hub's or a local page's.
         let build = include_str!("../build.rs");
         for command in HUB_COMMANDS {
@@ -1413,7 +1545,9 @@ mod tests {
         assert!(branch.contains(
             "if label == MAIN {\n                    crate::code::forget_watcher(&load_app);"
         ));
-        // Every local-session command checks its caller and its arguments.
+        // Every local-session command checks its caller and its arguments:
+        // the seven of a session that exists let the shell's own Code page
+        // in too, the others only the hub's page.
         for command in &local {
             let start = commands.find(&format!("pub async fn {command}(")).unwrap();
             let body = &commands[start..];
@@ -1421,11 +1555,15 @@ mod tests {
                 .find("\n#[tauri::command]")
                 .map_or(body.len(), |e| e + 1);
             let flat: String = body[..end].split_whitespace().collect();
-            assert!(
-                flat.contains("local_body(&app,&webview,&request"),
-                "{command}"
-            );
+            let check = if OFFLINE_COMMANDS.contains(command) {
+                "session_body(&app,&webview,&request"
+            } else {
+                "local_body(&app,&webview,&request"
+            };
+            assert!(flat.contains(check), "{command}");
         }
+        assert!(commands.contains("ipc::session_caller(page.as_ref()"));
+        assert!(commands.contains("ipc::local_caller(page.as_ref()"));
     }
 
     #[test]
@@ -1475,7 +1613,13 @@ mod tests {
             for permission in capability["permissions"].as_array().unwrap() {
                 let permission = permission.as_str().unwrap();
                 assert!(!plugin(permission), "{path:?}: {permission}");
-                assert!(!permission.contains("qmo-local"), "{path:?}: {permission}");
+                if let Some(command) = permission.strip_prefix("allow-qmo-") {
+                    let command = format!("qmo_{}", command.replace('-', "_"));
+                    assert!(
+                        OFFLINE_COMMANDS.contains(&command.as_str()),
+                        "{path:?}: {permission}"
+                    );
+                }
             }
             assert!(!text.contains("dialog:"), "{path:?}");
             assert!(!text.contains("fs:"), "{path:?}");
@@ -1486,6 +1630,26 @@ mod tests {
         let lib = include_str!("lib.rs");
         assert!(lib.contains(".plugin(code::Quiet(tauri_plugin_dialog::init()))"));
         assert_eq!(lib.matches("tauri_plugin_dialog::init()").count(), 1);
+    }
+
+    #[test]
+    fn the_offline_code_page_is_one_of_the_shells_pages() {
+        // What 打开本机会话 shows, and the one local page the session
+        // commands answer (`ipc::session_caller`).
+        let page = include_str!("../../ui/code.html");
+        assert_eq!(crate::ipc::OFFLINE_CODE, "/code.html");
+        assert!(page.contains(r#"<script src="code-render.js"></script>"#));
+        assert!(page.contains(r#"<script type="module" src="code.js"></script>"#));
+        let shell = include_str!("shell.rs");
+        assert!(shell.contains("Phase::Offline => show_local_in_main(app, \"code.html\"),"));
+        let offline = include_str!("../../ui/offline.js");
+        assert!(offline.contains("invoke('local_open', { target: 'code' })"));
+        let commands = include_str!("commands.rs");
+        assert!(commands.contains("\"code\" => shell::open_offline_code(&app),"));
+        // Still out of reach, an entry leaves the page where it is.
+        assert!(shell.contains(
+            "if !main_shows_offline_code(app) {\n        show_local_in_main(app, \"offline.html\");"
+        ));
     }
 
     #[test]

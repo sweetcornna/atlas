@@ -149,6 +149,7 @@ pub fn run() {
             commands::local_open,
             commands::local_close,
             commands::local_boot,
+            commands::local_reconnect,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
