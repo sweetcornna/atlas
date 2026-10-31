@@ -819,7 +819,7 @@ P37.15 未实测：Qmo.app 里的整条路（真壳的 `qmo_local_set_remote`、
 
 P37.16（离线打开 Code）的用例，同样只用假的壳与运行器，不启动 Qmo.app 与真的 agent：
 
-- 壳（`cargo test`，126 条，2026-10-31 第一次在 Linux（Ubuntu 24.04、WebKitGTK 2.52）上编过并跑过）：`session_caller` 只收中枢源页面与主窗口里的 `code.html`（`tauri://localhost`、`http(s)://tauri.localhost` 三种写法），别的本地页面、别的窗口、`tauri://evil`、`file:` 都拒；七条命令改核它、其余八条仍核 `local_caller`；`local.json` 恰好多这七条与 `local_reconnect`，开新会话、选文件夹、变更、改名、删除、Remote、`qmo_local_agents`、`qmo_sign_out` 不在里面；离线页、`local_open('code')`、`open_offline_code` 与「仍连不上就留在这一页」接在一起。
+- 壳（`cargo test`，127 条，2026-10-31 第一次在 Linux（Ubuntu 24.04、WebKitGTK 2.52）上编过并跑过）：`session_caller` 只收中枢源页面与主窗口里的 `code.html`（`tauri://localhost`、`http(s)://tauri.localhost` 三种写法），别的本地页面、别的窗口、`tauri://evil`、`file:` 都拒；七条命令改核它、其余八条仍核 `local_caller`；`local.json` 恰好多这七条与 `local_reconnect`，开新会话、选文件夹、变更、改名、删除、Remote、`qmo_local_agents`、`qmo_sign_out` 不在里面；离线页、`local_open('code')`、`open_offline_code` 与「仍连不上就留在这一页」接在一起。
 - 构建脚本（`atlas/scripts/__tests__/buildApp.test.ts`）：`code-render.js` 就是 `CODE_RENDER_JS` 加文件头、内容相同时不重写、不入库、页面先载它再载自己的脚本；页面模板里的图标与 `view/frontCode.ts` 的逐字相同、覆盖画法用到的每一个；画法要的每个字在三种语言里都有。
 - 页面（`atlas/packages/console/test/browser/codeOffline.browser.test.ts`，真 Chrome，`ui/` 按壳的方式静态供给、`code-render.js` 取自同一提交的 `CODE_RENDER_JS`，假壳与假运行器同中枢 Code 页的用例）：先登记通道再列表、按文件夹分组、打开会话读 200 条、一句先画再收记录、增量流式、征询取焦点且 Enter 不批准、允许一次、停止、重开时打开上次的会话，全程只调七条命令与 `local_state`、`local_reconnect`，每次调用的键与类型都合三方约定，没有一个出站请求；跳号重读、重复不画两次；模式三种情形；重新连接带上当前会话、仍连不上时按原因改写那一行、输入框有字时网络恢复不自动试、试的过程中不再发第二次；缺 `code-render.js` 只写一行；英、日两种语言与 375 px。截图核过明暗两种外观。
 

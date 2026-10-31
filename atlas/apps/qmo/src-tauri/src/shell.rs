@@ -339,6 +339,12 @@ impl Shell {
         self.with(|s| s.reveal_next = true)
     }
 
+    /// The person closed the main window to the tray while an entry was
+    /// under way: its end leaves the window closed.
+    pub fn cancel_reveal(&self) {
+        self.with(|s| s.reveal_next = false)
+    }
+
     /// Whether the entry that just ended may bring the main window up; asked
     /// once per entry. Never when started at login.
     fn take_reveal(&self) -> bool {
@@ -1191,6 +1197,13 @@ pub fn open_offline_code(app: &AppHandle) {
     }
 }
 
+/// What `reconnect` found on taking the shell's state.
+enum Claim {
+    Go,
+    In(Option<Hub>),
+    Refused(Problem),
+}
+
 /// From the shell's own Code page: try the hub again without leaving it
 /// (P37.16). In, the main window goes to the hub's `/code` (on `session`,
 /// already checked); turned away for good — the pairing gone, a hub without
@@ -1203,42 +1216,37 @@ pub fn reconnect(app: &AppHandle, session: Option<String>) -> Result<(), Problem
         Some(id) => format!("/code?session={id}"),
         None => "/code".to_string(),
     };
-    match s.phase() {
-        Phase::Offline => {}
+    // The phase looked at and the entry taken under one lock.
+    let claim = s.with(|st| match st.phase {
+        Phase::Offline if !st.entering => {
+            st.entering = true;
+            // A deep link followed meanwhile keeps its place.
+            if st.pending.is_none() {
+                st.pending = Some(path.clone());
+            }
+            st.phase = Phase::Entering;
+            Claim::Go
+        }
         // In already (a retry elsewhere got there): to the hub's Code.
-        Phase::Hub => {
-            if let Some(hub) = s.hub() {
+        Phase::Hub => Claim::In(st.hub.clone()),
+        Phase::SignedOut => Claim::Refused(Problem {
+            kind: ErrorKind::SignedOut,
+            message: "signed out".into(),
+        }),
+        _ => Claim::Refused(Problem {
+            kind: ErrorKind::Busy,
+            message: "an entry is under way".into(),
+        }),
+    });
+    match claim {
+        Claim::Go => {}
+        Claim::In(hub) => {
+            if let Some(hub) = hub {
                 navigate_main(app, hub.join(&path));
             }
             return Ok(());
         }
-        Phase::SignedOut => {
-            return Err(Problem {
-                kind: ErrorKind::SignedOut,
-                message: "signed out".into(),
-            })
-        }
-        Phase::Starting | Phase::Entering => {
-            return Err(Problem {
-                kind: ErrorKind::Busy,
-                message: "an entry is under way".into(),
-            })
-        }
-    }
-    let go = s.with(|st| {
-        if st.entering {
-            return false;
-        }
-        st.entering = true;
-        st.pending = Some(path);
-        st.phase = Phase::Entering;
-        true
-    });
-    if !go {
-        return Err(Problem {
-            kind: ErrorKind::Busy,
-            message: "an entry is under way".into(),
-        });
+        Claim::Refused(problem) => return Err(problem),
     }
     let outcome = run_qmo::<Session>(&["session", "--json"], None);
     let result = match outcome {
@@ -1715,6 +1723,12 @@ mod tests {
         let login = Shell::new(Lang::En, "0".into(), dir.join("settings.json"), true);
         login.reveal_next();
         assert!(!login.take_reveal());
+        // Closed to the tray while the entry at start was under way: it
+        // stays closed when the entry ends.
+        shell.reveal_next();
+        shell.cancel_reveal();
+        assert!(!shell.take_reveal());
+        assert!(include_str!("lib.rs").contains("app.state::<Shell>().cancel_reveal();"));
         // Every entry's end goes through `surface`, which also leaves a
         // window on screen or minimised alone; start and sign-in ask for it.
         let source = include_str!("shell.rs");
