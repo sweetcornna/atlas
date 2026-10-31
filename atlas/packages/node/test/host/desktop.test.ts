@@ -1,7 +1,7 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { expect, test } from 'bun:test'
+import { afterEach, expect, mock, spyOn, test } from 'bun:test'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
@@ -11,9 +11,15 @@ import type { DesktopActionView, DesktopNodeView } from '@qianmo/console'
 const ctx = { peer: 'hub', actor: 'ops', taskId: 'control' }
 const hash = (args: unknown) =>
   createHash('sha256').update(JSON.stringify(args)).digest('hex')
+afterEach(() => mock.restore())
 async function fixture(
   platform: NodeJS.Platform = 'darwin',
-  opts: { xvfb?: boolean; now?: () => number } = {},
+  opts: {
+    xvfb?: boolean
+    now?: () => number
+    display?: (file: string) => void
+    version?: () => Promise<Response>
+  } = {},
 ) {
   const previous = process.env.QIANMO_CONFIG_DIR
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'p21-unit-'))
@@ -27,12 +33,25 @@ async function fixture(
   let tabs = 1,
     pid = 100,
     estop = false
-  const server = Bun.serve({
-    port: 0,
-    hostname: '127.0.0.1',
-    fetch: () =>
-      Response.json(Array.from({ length: tabs }, () => ({ type: 'page' }))),
-  })
+  const cdpPort = 9222
+  const cdpUrl = `http://127.0.0.1:${cdpPort}`
+  // Unit tests fake the CDP boundary; real HTTP/Chrome is covered by the
+  // adjacent integration suite. Restore this per-test spy in afterEach.
+  spyOn(globalThis, 'fetch').mockImplementation(
+    Object.assign(
+      async (input: string | URL | Request) => {
+        const url = input instanceof Request ? input.url : String(input)
+        if (url === `${cdpUrl}/json/version`)
+          return opts.version ? await opts.version() : Response.json({})
+        if (url === `${cdpUrl}/json/list`)
+          return Response.json(
+            Array.from({ length: tabs }, () => ({ type: 'page' })),
+          )
+        throw new Error(`Unexpected fixture fetch: ${url}`)
+      },
+      { preconnect: globalThis.fetch.preconnect },
+    ),
+  )
   const launcher: DesktopLauncher = {
     available: name =>
       name === 'Xvfb' || name === 'xauth' ? opts.xvfb === true : true,
@@ -44,12 +63,16 @@ async function fixture(
     },
     async start(program, argv, env) {
       calls.push({ program, argv, env: { ...env } })
-      if (program === '/bin/sh') fs.writeFileSync(argv.at(-1)!, '27\n')
+      if (program === '/bin/sh') {
+        const displayFile = argv.at(-1)!
+        if (opts.display) opts.display(displayFile)
+        else fs.writeFileSync(displayFile, '27\n')
+      }
       const profileArg = argv.find(a => a.startsWith('--user-data-dir='))
       if (profileArg)
         fs.writeFileSync(
           path.join(profileArg.split('=')[1]!, 'DevToolsActivePort'),
-          `${server.port}\n/ws\n`,
+          `${cdpPort}\n/ws\n`,
         )
       const ownPid = pid++
       let running = true
@@ -110,7 +133,6 @@ async function fixture(
     },
     async cleanup() {
       await node.close()
-      await server.stop(true)
       process.env.QIANMO_CONFIG_DIR = previous
       fs.rmSync(root, { recursive: true, force: true })
     },
@@ -141,9 +163,13 @@ test('host allocates trusted launch args, deduplicates controls, refuses mismatc
   try {
     expect((await f.enable()).ok).toBe(true)
     expect((await f.enable()).ok).toBe(true)
-    expect(f.calls.filter(c => c.program.includes('Chrome')).length).toBe(1)
+    expect(
+      f.calls.filter(c => c.argv.includes('--remote-debugging-port=0')).length,
+    ).toBe(1)
     expect((await f.enable('enable', { browser: false })).ok).toBe(false)
-    const launch = f.calls.find(c => c.program.includes('Chrome'))!
+    const launch = f.calls.find(c =>
+      c.argv.includes('--remote-debugging-port=0'),
+    )!
     expect(launch.argv).toContain('--remote-debugging-port=0')
     expect(launch.argv).toContain('--remote-debugging-address=127.0.0.1')
     expect(launch.argv).not.toContain('--no-sandbox')
@@ -318,47 +344,133 @@ test('sensitive observation bypasses approver; always observes through approval 
     await f.cleanup()
   }
 })
-test('Linux launcher uses Xauthority, dynamic display, no TCP/no -ac and macOS cannot open computer', async () => {
-  const f = await fixture('linux', { xvfb: true })
-  try {
-    expect(
-      (await f.enable('linux', { browser: true, computer: true })).ok,
-    ).toBe(true)
-    const xvfb = f.calls.find(c => c.program === '/bin/sh')!
-    expect(xvfb.argv[1]).toContain('-screen 0 1440x900x24 -nolisten tcp -auth')
-    expect(xvfb.argv[1]).not.toContain('-ac ')
-    const browser = f.calls.find(c => c.program.includes('chromium'))!
-    expect(browser.env.DISPLAY).toBe(':27')
-    expect(browser.env.XAUTHORITY).toBe(
-      path.join(f.root, 'qianmo/desktop/main/Xauthority'),
+for (const executable of ['google-chrome', 'chromium', null]) {
+  test(`Linux launcher uses Xauthority, dynamic display, no TCP/no -ac (${executable ?? 'PATH fallback'})`, async () => {
+    const f = await fixture('linux', { xvfb: true })
+    spyOn(Bun, 'which').mockImplementation(program =>
+      program === executable ||
+      (executable === 'google-chrome' && program === 'chromium')
+        ? path.join(f.root, 'bin', program)
+        : null,
     )
-    expect(browser.env.WAYLAND_DISPLAY).toBeUndefined()
-    expect(f.node.resource('main')?.computer).toBe(true)
+    try {
+      expect(
+        (await f.enable('linux', { browser: true, computer: true })).ok,
+      ).toBe(true)
+      const xvfb = f.calls.find(c => c.program === '/bin/sh')!
+      expect(xvfb.argv[1]).toContain(
+        '-screen 0 1440x900x24 -nolisten tcp -auth',
+      )
+      expect(xvfb.argv[1]).not.toContain('-ac ')
+      const browser = f.calls.find(c =>
+        c.argv.includes('--remote-debugging-port=0'),
+      )!
+      expect(browser.program).toBe(
+        executable ? path.join(f.root, 'bin', executable) : 'chromium',
+      )
+      expect(browser.env.DISPLAY).toBe(':27')
+      expect(browser.env.XAUTHORITY).toBe(
+        path.join(f.root, 'qianmo/desktop/main/Xauthority'),
+      )
+      expect(browser.env.WAYLAND_DISPLAY).toBeUndefined()
+      expect(f.node.resource('main')?.computer).toBe(true)
+      expect(
+        (
+          await f.node.control(
+            'desktop.disable',
+            { agent: 'main', browser: false, operationId: 'browser-off' },
+            ctx,
+          )
+        ).ok,
+      ).toBe(true)
+      expect(f.node.resource('main')).toMatchObject({
+        browser: false,
+        computer: true,
+      })
+      expect(
+        (
+          await f.node.control(
+            'desktop.disable',
+            { agent: 'main', browser: true, operationId: 'bad-disable' },
+            ctx,
+          )
+        ).ok,
+      ).toBe(false)
+    } finally {
+      await f.cleanup()
+    }
+  })
+}
+test('Linux enable waits for delayed Xvfb allocation and Chrome CDP readiness', async () => {
+  const displayPolling = Promise.withResolvers<void>()
+  const displayReady = Promise.withResolvers<void>()
+  const versionRequested = Promise.withResolvers<void>()
+  const version = Promise.withResolvers<Response>()
+  let displayFile: string | undefined
+  const f = await fixture('linux', {
+    xvfb: true,
+    display: file => {
+      displayFile = file
+    },
+    version: () => {
+      versionRequested.resolve()
+      return version.promise
+    },
+  })
+  spyOn(Bun, 'which').mockReturnValue(null)
+  // Hold the poll after an empty display read, so publishing the display
+  // cannot race ahead of the host's readiness check.
+  spyOn(Bun, 'sleep').mockImplementation(() => {
+    displayPolling.resolve()
+    return displayReady.promise
+  })
+  let settled = false
+  const enabled = f
+    .enable('delayed', { browser: true, computer: true })
+    .then(result => {
+      settled = true
+      return result
+    })
+  try {
+    await displayPolling.promise
+    await Promise.resolve()
+    expect(settled).toBe(false)
     expect(
-      (
-        await f.node.control(
-          'desktop.disable',
-          { agent: 'main', browser: false, operationId: 'browser-off' },
-          ctx,
-        )
-      ).ok,
-    ).toBe(true)
+      f.calls.some(c => c.argv.includes('--remote-debugging-port=0')),
+    ).toBe(false)
     expect(f.node.resource('main')).toMatchObject({
       browser: false,
-      computer: true,
+      computer: false,
+      display: null,
+      cdpUrl: null,
     })
-    expect(
-      (
-        await f.node.control(
-          'desktop.disable',
-          { agent: 'main', browser: true, operationId: 'bad-disable' },
-          ctx,
-        )
-      ).ok,
-    ).toBe(false)
+    fs.writeFileSync(displayFile!, '27\n')
+    displayReady.resolve()
+    await versionRequested.promise
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    expect(f.node.resource('main')).toMatchObject({
+      browser: false,
+      computer: false,
+      display: ':27',
+      cdpUrl: null,
+    })
+    version.resolve(Response.json({}))
+    expect((await enabled).ok).toBe(true)
+    expect(f.node.resource('main')).toMatchObject({
+      browser: true,
+      computer: true,
+      display: ':27',
+      cdpUrl: 'http://127.0.0.1:9222',
+    })
   } finally {
+    if (displayFile) fs.writeFileSync(displayFile, '27\n')
+    displayReady.resolve()
+    version.resolve(Response.json({}))
     await f.cleanup()
   }
+})
+test('macOS and Linux without Xvfb cannot open computer', async () => {
   const mac = await fixture()
   try {
     expect((await mac.enable('bad', { computer: true })).ok).toBe(false)
