@@ -710,6 +710,76 @@ describe.skipIf(SKIP !== null)(
       }
     }, 30_000)
 
+    test('a stream event for the conversation being opened waits for the opening, not read over it', async () => {
+      const h = twoAgents()
+      const member = await person(h.handle, 'member')
+      const [planner, reviewer] = await residents(h, member)
+      const reads: { open: boolean; start: number; end: number }[] = []
+      const server = Bun.serve({
+        port: 0,
+        hostname: '127.0.0.1',
+        idleTimeout: 0,
+        async fetch(request) {
+          const url = new URL(request.url)
+          if (url.pathname !== `/fragments/chat/front/view/${reviewer}`)
+            return h.handle(request)
+          const read = {
+            open: url.searchParams.get('open') === '1',
+            start: Date.now(),
+            end: 0,
+          }
+          reads.push(read)
+          // The opening takes a while: the stream's event lands meanwhile.
+          if (read.open) await new Promise(resolve => setTimeout(resolve, 500))
+          const answer = await h.handle(request)
+          read.end = Date.now()
+          return answer
+        },
+      })
+      const base = `http://127.0.0.1:${server.port}`
+      const tab = await browser.tab()
+      try {
+        await tab.send('Network.setCookie', {
+          name: 'qianmo_session',
+          value: member.sid,
+          url: base,
+          httpOnly: true,
+          sameSite: 'Strict',
+        })
+        await observeChatStream(tab)
+        await tab.goto(`${base}/?session=${planner}`)
+        await tab.waitFor(
+          `window.__chatStreamOpen === true && document.getElementById('fx-thread').getAttribute('data-session') === ${JSON.stringify(planner)}`,
+        )
+        await new Promise(resolve => setTimeout(resolve, 400))
+        // Opened as a row of the list opens it.
+        await tab.evaluate(`(() => {
+          const row = document.createElement('button');
+          row.type = 'button';
+          row.setAttribute('data-action', 'fx-open');
+          row.setAttribute('data-session', ${JSON.stringify(reviewer)});
+          document.body.appendChild(row);
+          row.click();
+          row.remove();
+        })()`)
+        await new Promise(resolve => setTimeout(resolve, 30))
+        h.chat.emit(reviewer)
+        await tab.waitFor(
+          `document.getElementById('fx-thread').getAttribute('data-session') === ${JSON.stringify(reviewer)}`,
+        )
+        await new Promise(resolve => setTimeout(resolve, 700))
+        const opening = reads.find(read => read.open)
+        expect(opening?.end).toBeGreaterThan(0)
+        // Every read in the background began once the opening was answered.
+        expect(
+          reads.filter(read => !read.open && read.start < (opening?.end ?? 0)),
+        ).toEqual([])
+      } finally {
+        await tab.close()
+        server.stop(true)
+      }
+    }, 30_000)
+
     test('a stream the hub refused is opened again, and the polling stops once it is', async () => {
       const h = accountsHarness()
       const member = await person(h.handle, 'member')
@@ -805,6 +875,17 @@ describe.skipIf(SKIP !== null)(
         // Four lines, then one longer line pasted over all of them.
         await at(text)
         expect(await at('x'.repeat(text.length + 4))).toBe(one)
+        // Wrapped in a narrow box, then the box widened (a panel closed
+        // beside it, no window resize): typing on fits it to one line again.
+        await tab.evaluate(
+          `document.getElementById('fx-text').style.width = '120px'`,
+        )
+        const long = '一句不换行但在窄框里会折行的话'
+        expect(await at(long)).toBeGreaterThan(one)
+        await tab.evaluate(
+          `document.getElementById('fx-text').style.width = ''`,
+        )
+        expect(await at(`${long}。`)).toBe(one)
         expect(await at('一\n'.repeat(40))).toBeLessThanOrEqual(240 + 2)
         expect(await at('')).toBeLessThanOrEqual(one)
         expect(

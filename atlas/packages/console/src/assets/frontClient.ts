@@ -120,8 +120,8 @@ function frontScript(): string {
   // The page changed the thread itself (a line on its way, one that did not
   // go): the next answer is drawn, whatever it is.
   function touched() { shownView = null; }
-  // Days: the side list's groups and a pause's date are written by the page
-  // for the reader's today, so an answer from another day is drawn again.
+  // The side list's day groups (今天, 昨天) are the page's, for the reader's
+  // today: an answer from another day is drawn again.
   function today() { return new Date().toDateString(); }
   var viewSeq = 0;
   var sideSeq = 0;
@@ -301,13 +301,13 @@ function frontScript(): string {
       // Only a refresh in the background: an opening, a send or a retry
       // (toBottom) redraws whatever came back.
       if (!opening && toBottom !== true && shownView && shownView.html === html &&
-          shownView.thread === byId('fx-thread') && shownView.day === today()) {
+          shownView.thread === byId('fx-thread')) {
         stopRetry();
         return true;
       }
       var was = threadState();
       adopt(html, ['fx-head', 'fx-thread', 'fx-activity'], !opening);
-      shownView = { html: html, thread: byId('fx-thread'), day: today() };
+      shownView = { html: html, thread: byId('fx-thread') };
       stopRetry();
       keepFigure(figure);
       if (!opening) easeRedraw(was);
@@ -474,7 +474,10 @@ function frontScript(): string {
     var mine = nav;
     viewTimer = setTimeout(function () {
       viewTimer = null;
-      if (mine === nav) refreshView(false);
+      if (mine !== nav) return;
+      // An opening still on its way reads what this would: wait for it.
+      if (switching) { soonView(); return; }
+      refreshView(false);
     }, 150);
   }
 
@@ -1402,26 +1405,31 @@ function frontScript(): string {
 
   /* ---------------- the composer ---------------- */
 
-  // The text the box was last sized for. Text that only goes on from it can
-  // only make the box taller: one look at whether it overflows. Anything
-  // else (a deletion, a paste over a selection, a value put back, a window
-  // of another width) is measured from scratch, two more layouts.
+  // The text, and the box's width, it was last sized for. Text that only
+  // goes on from it, in a box as wide, can only make it taller: one look at
+  // whether it overflows. Anything else (a deletion, a paste over a
+  // selection, a value put back, a panel opened beside it) is measured from
+  // scratch, two more layouts.
   var sizedFor = null;
-  window.addEventListener('resize', function () { sizedFor = null; });
+  var sizedWidth = 0;
   function autosize() {
     var box = byId('fx-text');
     if (!box) return;
     var value = box.value;
+    // Read before anything is written: one layout, the one the look below
+    // needs anyway.
+    var width = value ? box.clientWidth : 0;
     // An empty box is one line: its placeholder can wrap while the layout
     // settles, and must never be what sizes it.
     if (!value) box.style.height = '';
-    else if (sizedFor === null || !box.style.height || value.indexOf(sizedFor) !== 0) {
+    else if (sizedFor === null || !box.style.height || value.indexOf(sizedFor) !== 0 || width !== sizedWidth) {
       box.style.height = 'auto';
       box.style.height = Math.min(box.scrollHeight, 240) + 'px';
     } else if (box.clientHeight < 240 && box.scrollHeight > box.clientHeight) {
       box.style.height = Math.min(box.scrollHeight, 240) + 'px';
     }
     sizedFor = value;
+    sizedWidth = width;
     var send = byId('fx-send');
     if (send) send.disabled = box.disabled || !box.value.trim();
   }
