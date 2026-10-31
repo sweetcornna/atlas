@@ -49,6 +49,7 @@ cd atlas/apps/qmo/src-tauri
 cargo about generate --locked --config about.toml about.hbs -o THIRD-PARTY-NOTICES.txt
 ```
 
+- 随包还有 `BUN-NOTICES.txt`：随包 `qmo` 内嵌的 Bun 运行时的许可，是编译所用 Bun 版本的 `LICENSE.md` 逐字副本。`.tool-versions` 换了 Bun 版本就要从 `oven-sh/bun` 对应标签重取，`build-app.ts` 打包前会核对版本，对不上就停。
 - 安装包只在 Apple 芯片的 macOS 上做，里面是 arm64。发给别人的包要在标签所在的干净提交上构建，随包 `qmo` 的 `--version` 末尾不带 `-dirty`。
 
 ## 对着预览中枢跑
