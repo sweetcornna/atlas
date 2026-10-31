@@ -3,17 +3,18 @@
 
 # 阡陌 v3.2.0 GitHub Release
 
-v3.2.0 收录 v3.1.1 之后合入 main 的全部改动（#277–#296），主要是桌面版照 Claude Desktop 做的第二轮：
+v3.2.0 收录 v3.1.1 之后合入 main 的全部改动（#277–#298），主要是桌面版照 Claude Desktop 做的第二轮，外加一次基座同步：
 - 主窗口改为 Work | Code 两种模式，加设置卡片与局部导航。
 - Code 模式的本机会话：Claude Code、Codex 和四种 ACP agent，独立工作树，Remote 同步，中枢连不上时也能打开。
 - Work 的常驻会话与「开始一项工作」。
 - 分栏与悬停侧栏。
 - 中枢缺省把智能体开成自动审批。
 - 修了客户端卡顿的几处。
+- 基座 qianmopi 同步到上游 v18.14.1，工具链升到 Bun 1.4.4。
 
-产品代码是 main `ab968ec0`。标签所在提交只多了这次的文档改动（本文、路线图、README），可以用 `git diff --stat ab968ec0 v3.2.0` 核对。
+标签打在 #298 的合并提交上，产品代码以它为准：main `ab968ec0` 加上基座同步（#298）。同一个 PR 里还有这次的文档改动（本文、路线图），可以用 `git diff --stat ab968ec0 v3.2.0` 核对。
 
-**与 v3.1.0 不同，本版产品代码不是内测环境上记下的那一份**：仓库里最近一次部署记录是 10 月 25 日的 `af903b8a`（#283），之后合入的 #285–#296 没有部署记录（见「部署与验证」）。
+**与 v3.1.0 不同，本版产品代码不是内测环境上记下的那一份**：仓库里最近一次部署记录是 10 月 25 日的 `af903b8a`（#283），之后合入的 #285–#298 没有部署记录，其中包括这次基座同步（见「部署与验证」）。
 
 发行形式与 v3.1.0 相同：源码归档加 `SHA256SUMS`，不附可执行文件和安装包。v3.1.1 附的 `.dmg` 是旧的壳，没有本版的 Code 本机会话与离线页。识别 `qm` 产物以编译进去的源码提交为准（CONTRIBUTING §11）；`qmo` 与桌面壳仍自报 0.1.0。
 
@@ -99,6 +100,18 @@ v3.2.0 收录 v3.1.1 之后合入 main 的全部改动（#277–#296），主要
 | 四栏空闲 | 分栏里的待批准轮询改由窗口统一做，再分给各栏 | 每分钟 80 个请求 | 32 个 |
 | 输入框每按一个键 | 自动增高少一次强制布局 | 7.0 ms | 6.1 ms |
 
+### 基座（#298）
+
+- **qianmopi 同步到上游 v18.14.1**：
+  - 对应的上游快照由 v18.8.8 升到 v18.14.1（2026-10-31 发布），区间内上游发了 26 个正式版。新快照标签 `base-snapshot/omp-v18.14.1` 无父提交，树与上游逐字节一致；旧快照标签都没动。溯源记录见 [BASE.md](../../BASE.md)「omp 上游同步记录」。
+  - 做法照旧：快照间的差异三方应用到阡陌的树上，第一笔提交只放上游内容，阡陌的判断从后面的提交起。3675 个路径里冲突 2 个，都是阡陌改过的上游测试；上游已经改写了它们，取上游侧。
+  - [基座改动清单](./base-modifications.md)删掉三行：三处测试改动被上游吸收或取代。上游仍没修的浏览器取消停载问题，阡陌的改动保留。
+- **工具链**：上游要求 Bun ≥ 1.4.4，`.tool-versions` 由 1.4.3 升到 1.4.4（章程 v3.18.1 补注）。
+- **跟着上游改的**：
+  - 上游把根目录的 `THIRD-PARTY-NOTICES.txt` 拆成 `packages/coding-agent/`（CLI）与 `packages/natives/`（原生插件）两份。SBOM 与 NOTICE 改指这两份，SBOM 重新生成。
+  - Bun 1.4.4 不再把 `detective-typescript` 提升到根 `node_modules`，循环依赖检查改为沿 madge 实际的加载链解析，模块数与之前一致。
+- **自动同步**：每天的 sync-omp 从 10 月 23 日起都停在冲突上，10 月 30 日那次又在查上游发行时被 GitHub API 匿名限流（403）。这次手工走完同步，查发行改为带 Actions 令牌。
+
 ### 稳定性与工程
 
 - **壳在 Linux 上能编译**（#296）：tauri-plugin-deep-link 2.6.2 跟 rust-ini 0.21.3 编不过，`Cargo.lock` 把 rust-ini 钉在 0.21.1，壳的第三方许可声明随之重新生成。Linux 上壳的 `cargo test`（127 条）通过。没有 Linux 安装包。
@@ -125,8 +138,11 @@ v3.2.0 收录 v3.1.1 之后合入 main 的全部改动（#277–#296），主要
   - 后台 8 页的整页与局部应答。
   - 设置页直接打开时卡片已展开；`/code` 能打开；首页有 Work | Code 切换。
   - 中枢 `/code` 的页面里有本机会话界面。舰队智能体仍都跑 qianmopi。
-- **没有部署记录的**：`af903b8a` 之后合入的 #285–#296，包括 Codex 与 ACP 本机会话、Remote、Work、工作树、分栏、离线 Code 与性能修复。现网开关没有变。
-- **CI**：本版的 main CI 全绿（`ab968ec0`）。CI 不构建桌面壳。
+- **没有部署记录的**：`af903b8a` 之后合入的 #285–#298，包括 Codex 与 ACP 本机会话、Remote、Work、工作树、分栏、离线 Code、性能修复与基座同步。内测环境的节点仍跑 v18.8.8 对应的 qianmopi。现网开关没有变。
+- **CI**：`ab968ec0` 的 main CI 全绿；基座同步的结果见下一条。CI 不构建桌面壳。
+- **基座同步（#298）**：
+  - 本机（macOS，Bun 1.4.4）跑过并通过：biome、阡陌类型检查、identity-paths、license-headers、omp-pin、循环依赖、unused、SBOM `--check`、基座的 `check:ts`。原生插件按新基座重编成功。
+  - 发行时没跑完的：阡陌测试、基座 `test:ts`、registry-ha、`qm` 与客户端的构建和冒烟。CI 里 static 与 client-windows 通过，native 及其后的作业没有等完。负责人要求不等 CI 直接发行。
 - 没有在真实环境验证的主要部分：
   - Code 本机会话只在假进程（假 Claude Code、假 app-server、假 ACP）和临时仓库上验过。Qmo.app 里用真的 Claude Code、Codex、Gemini CLI 都没有实测，Qwen Code、opencode、dsh 也没有实测。
   - Remote 只在运行器加回环上的假中枢、浏览器测试里验过，两台真设备之间的同步没有实测。
@@ -145,7 +161,9 @@ v3.2.0 收录 v3.1.1 之后合入 main 的全部改动（#277–#296），主要
 - **Work**：中枢与节点都要升级。六个工作流技能和文档宿主工具在节点上。外部底层（Claude Code、Codex、ACP）不会收到这六个技能。旧版控制台读新的对话记录时，文件卡退化成一条过程行，活动记录整行跳过；这一点只按代码核对过，没有起旧版本跑。
 - **桌面版**：Code 本机会话、Remote 与离线 Code 都要用新的 Qmo.app，运行器在随包的 `qmo` 里。本版不附安装包，要在 macOS 上自己构建：`bun run atlas:build:app`，见 [`atlas/apps/qmo/README.md`](../../atlas/apps/qmo/README.md)。
 - **Remote**：只给个人账号。旧式令牌与 break-glass 访问 `/v0/code/*` 一律 403；中枢没接设备账本时，`/v0/client/link` 与 `/v0/code/*` 是 404 或 501。
-- **构建与开发**：工具链仍是 Bun 1.4.3（`.tool-versions`）。
+- **构建与开发**：
+  - 工具链升到 Bun 1.4.4（`.tool-versions`）。换了基座，原生插件要重编：`bun run build:native`。
+  - 新基座里，`--model`、设置、角色与任务智能体里带厂商前缀的模型选择要写确切的模型 ID 或别名，写近似的名字会报错并给出候选，不再自动选上相近的模型（上游 v18.14.0）。不带前缀的写法（如 `opus`）仍按模糊匹配。
 
 ## 已知问题
 
@@ -157,4 +175,4 @@ v3.2.0 收录 v3.1.1 之后合入 main 的全部改动（#277–#296），主要
 
 ## 出处
 
-各项改动见上面列出的 PR。设计与逐包状态见 [`qmo-local.md`](./qmo-local.md)、[`work-tasks.md`](./work-tasks.md)、[`qmo-app.md`](./qmo-app.md)、[`elevation.md`](./elevation.md) §8.1 与[路线图](./roadmap.md)。部署、验收与冒烟记录不在仓库里。
+各项改动见上面列出的 PR。基座同步见 [BASE.md](../../BASE.md) 与[基座改动清单](./base-modifications.md)。设计与逐包状态见 [`qmo-local.md`](./qmo-local.md)、[`work-tasks.md`](./work-tasks.md)、[`qmo-app.md`](./qmo-app.md)、[`elevation.md`](./elevation.md) §8.1 与[路线图](./roadmap.md)。部署、验收与冒烟记录不在仓库里。
