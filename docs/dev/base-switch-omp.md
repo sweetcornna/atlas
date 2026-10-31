@@ -7,7 +7,7 @@
 |---|---|
 | 决议 | 负责人 2026-10-07：整仓换基座（章程 v3.0 基座路线变更） |
 | 新基座 | oh-my-pi（omp）v18.8.4，上游 `can1357/oh-my-pi` 提交 `40e9368ef0458fd9073329cdff4174895f91bc6b`，MIT |
-| 新度量基线 | 标签 `base-snapshot/omp-v18.14.1`（无父提交，树 `c7d2ecac…` 与上游逐字节一致） |
+| 新度量基线 | 标签 `base-snapshot/omp-v18.8.4`（无父提交，树 `c7d2ecac…` 与上游逐字节一致）；之后每次上游同步换成新的快照标签，现行的见 `atlas/upstream/omp.json` |
 | 导入提交 | `c9a87c8c`：删除 occ 基座树 4033 文件，按快照写入 8798 文件，阡陌 1238 文件原样保留 |
 | 旧基座 | open-claude-code v2.46.0（`base-snapshot/v2.46.0` 保留，不移动、不删除） |
 
@@ -37,7 +37,7 @@ atlas/                          仓库根 = omp v18.8.4 基座树（MIT，见 LI
 
 根工作区：根 `package.json` 以 omp 版本为底，`workspaces.packages` 追加 `atlas/packages/*`，阡陌脚本一律加 `atlas:` 前缀，不改 omp 既有脚本名。
 
-工具链：Bun **≥ 1.4**（omp `packageManager: bun@>=1.4`，`.tool-versions` 固定 1.4.3）；omp 原生插件 `pi_natives.<platform>.node` 由 `bun run build:native` 本地构建（cargo，需要 `rust-toolchain.toml` 指定的 nightly 与 ninja），或取 npm 预编译叶包。
+工具链：Bun **≥ 1.4**（omp `packageManager: bun@>=1.4.4`，`.tool-versions` 固定 1.4.4）；omp 原生插件 `pi_natives.<platform>.node` 由 `bun run build:native` 本地构建（cargo，需要 `rust-toolchain.toml` 指定的 nightly 与 ninja），或取 npm 预编译叶包。
 
 格式与类型：阡陌路径用 biome（`biome.json` 的 `files.includes` 仅含 `atlas/**`、`demo/**`）与 `tsgo -p tsconfig.atlas.json`；omp 路径保持 oxlint / oxfmt / 各包 tsgo，阡陌不重排 omp 文件。
 
