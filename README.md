@@ -222,7 +222,8 @@ bun test --preload ./atlas/tests/preload.ts ./atlas/packages/<包>/test/<名>.te
 | [接力接法](docs/dev/handoff-usage.md) | 本机编程工具与节点的配对和接力 |
 | [演示环境](docs/dev/demo-env.md) | 本地演示拓扑 |
 | [基座改动清单](docs/dev/base-modifications.md) | 对基座文件的修改与删除登记 |
-| [v3.2.1 发行说明](docs/dev/release-v3.2.1.md) | 最近一次 GitHub 发行：修 v3.2.0 源码构建不了 `qm` 等三处 |
+| [v3.2.2 发行说明](docs/dev/release-v3.2.2.md) | 最近一次 GitHub 发行：附桌面版 macOS 安装包，补 Bun 运行时的许可声明 |
+| [v3.2.1 发行说明](docs/dev/release-v3.2.1.md) | 修 v3.2.0 源码构建不了 `qm` 等三处 |
 | [v3.2.0 发行说明](docs/dev/release-v3.2.0.md) | Work 与 Code 两种模式、本机会话、Remote、分栏、基座同步到上游 v18.14.1，改动、部署与已知问题 |
 | [v3.1.1 发行说明](docs/dev/release-v3.1.1.md) | 桌面版 macOS 安装包与壳的许可声明 |
 | [v3.1.0 发行说明](docs/dev/release-v3.1.0.md) | v3.1.0 的改动、部署与已知问题 |

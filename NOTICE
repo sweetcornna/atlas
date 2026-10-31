@@ -346,7 +346,11 @@ process-nextick-args、util-deprecate、queue，均为 MIT；inherits、minimali
 `THIRD-PARTY-NOTICES.txt` 覆盖：cargo-about 按 `about.toml`、`about.hbs` 与
 `Cargo.lock` 生成，列出编进壳里的每个 crate 及其许可正文，随 Qmo.app 放在
 `Contents/Resources/`，与 `LICENSE` 一起；许可策略见同目录 `deny.toml`，改了依赖要
-重新生成。随包的 `qmo` 客户端是 Bun 单文件编译产物，其依赖属于上面的 SBOM。
+重新生成。随包的 `qmo` 客户端是 Bun 单文件编译产物，其依赖属于上面的 SBOM；它内嵌的
+Bun 运行时（Bun 本身 MIT，静态链接的 JavaScriptCore/WebKit 为 LGPL-2，另有若干库）
+的许可见同目录 `BUN-NOTICES.txt`：编译所用 Bun 版本的 `LICENSE.md` 逐字副本，加一段
+重新链接的说明，同样放在 `Contents/Resources/`。`atlas/scripts/build-app.ts` 打包前
+核对它写的版本与编译 `qmo` 的 Bun 一致。
 
 五.4 随仓库分发的第三方标识（不授出）
 ----------------------------------------
@@ -978,7 +982,12 @@ directory: cargo-about generates it from `about.toml`, `about.hbs` and
 and it ships in `Contents/Resources/` of Qmo.app next to `LICENSE`; the license
 policy is in `deny.toml` there, and a dependency change means regenerating it.
 The bundled `qmo` client is a Bun single-file build; its dependencies belong to
-the SBOM above.
+the SBOM above. The Bun runtime embedded in it (Bun itself MIT, statically linked
+JavaScriptCore/WebKit LGPL-2, plus several libraries) is covered by
+`BUN-NOTICES.txt` in the same directory: a verbatim copy of `LICENSE.md` for the
+Bun version that compiled `qmo`, with a note on relinking, also shipped in
+`Contents/Resources/`. `atlas/scripts/build-app.ts` checks before bundling that
+it names the Bun compiling `qmo`.
 
 5.4 Third-party marks distributed with the repository (not granted)
 ----------------------------------------

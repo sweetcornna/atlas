@@ -140,6 +140,21 @@ function buildSidecar(): number {
   return 0
 }
 
+/**
+ * The bundle ships `BUN-NOTICES.txt` for the Bun runtime embedded in `qmo`;
+ * it must name the Bun that compiled this sidecar, or the notice is stale.
+ */
+function bunNoticesMatch(): boolean {
+  const tag = `bun-v${Bun.version}`
+  const text = readFileSync(join(APP_DIR, 'BUN-NOTICES.txt'), 'utf8')
+  if (new RegExp(`\\bBun ${tag.replaceAll('.', '\\.')}\\b`).test(text))
+    return true
+  console.error(
+    `[build-app] BUN-NOTICES.txt does not name ${tag}; refresh it from oven-sh/bun LICENSE.md at that tag`,
+  )
+  return false
+}
+
 function main(argv: readonly string[]): number {
   const known = new Set(['--debug', '--sidecar', '--dev'])
   const unknown = argv.find(arg => !known.has(arg))
@@ -152,6 +167,7 @@ function main(argv: readonly string[]): number {
   writeCodeRender()
   if (argv.includes('--sidecar')) return 0
   if (argv.includes('--dev')) return run('cargo', ['tauri', 'dev'], APP_DIR)
+  if (!bunNoticesMatch()) return 1
   const status = run(
     'cargo',
     tauriBuildArgs(process.platform, argv.includes('--debug')),
