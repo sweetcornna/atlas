@@ -751,7 +751,8 @@ msgs.addEventListener('click', event => {
   const action = button.getAttribute('data-action')
   if (action === 'code-retry') {
     const line = button.closest('.fx-msg')?.qmoLine
-    if (!line || !view) return
+    // Not while reconnecting: a line that fails again would go with the page.
+    if (!line || !view || reconnecting) return
     view.lines = view.lines.filter(other => other !== line)
     send(line.text)
   } else if (action === 'fx-copy-turn') {

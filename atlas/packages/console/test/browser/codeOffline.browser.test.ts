@@ -547,6 +547,21 @@ describe.skipIf(SKIP !== null)('Code offline: the shell’s own page', () => {
       expect(await tab.evaluate<string>(`${q('#offline')}.textContent`)).toBe(
         '连不上中枢 · 这里只有这台电脑上的会话',
       )
+      // While a reconnect is on its way, 重试 waits: a line that failed again
+      // would go with the page.
+      await tab.evaluate(`window.__local.problem = null`)
+      await tab.evaluate(`${q('#reconnect')}.click()`)
+      await tab.waitFor(`${calls('local_reconnect')}.length === 2`)
+      const sends = await tab.evaluate<number>(
+        `${calls('qmo_local_send')}.length`,
+      )
+      await tab.evaluate(
+        `${q('#msgs .fx-msg-user.is-failed .fx-retry')}.click()`,
+      )
+      await new Promise(resolve => setTimeout(resolve, 150))
+      expect(
+        await tab.evaluate<number>(`${calls('qmo_local_send')}.length`),
+      ).toBe(sends)
     } finally {
       await tab.close()
     }

@@ -483,9 +483,11 @@ function frontScript(): string {
 
   function refreshAll() {
     // Not while a first line is on its way: the welcome under it is about to
-    // become the conversation, and redrawing it would drop the line. Not while
-    // an opening is on its way either: it reads this, and is not to be read over.
-    var view = (state.busy && !state.active) || switching ? Promise.resolve() : refreshView(false);
+    // become the conversation, and redrawing it would drop the line. While an
+    // opening is on its way, after it (soonView waits for it): read over, its
+    // answer would be dropped; not read, a change it missed would be.
+    var view = state.busy && !state.active ? Promise.resolve() :
+      switching ? (soonView(), Promise.resolve()) : refreshView(false);
     return Promise.all([view, refreshSide()]);
   }
 

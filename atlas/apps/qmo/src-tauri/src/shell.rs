@@ -1275,17 +1275,20 @@ pub fn reconnect(app: &AppHandle, session: Option<String>) -> Result<(), Problem
         }
         Err(failure) => {
             let problem = Problem::from(&failure);
-            // Not where the next entry goes: the page may be on another
-            // session by then, and asks again with its own.
-            s.with(|st| {
-                if !st.linked && st.pending.as_deref() == Some(path.as_str()) {
-                    st.pending = None;
-                }
-            });
             turned_away(app, failure);
             Err(problem)
         }
     };
+    // Not in, however it went (qmo, or arrive turning it away): its place is
+    // not where the next entry goes. The page may be on another session by
+    // then, and asks again with its own.
+    if result.is_err() {
+        s.with(|st| {
+            if !st.linked && st.pending.as_deref() == Some(path.as_str()) {
+                st.pending = None;
+            }
+        });
+    }
     s.with(|st| st.entering = false);
     result
 }
