@@ -190,6 +190,9 @@ struct State {
     next_notification: i32,
     /// Started at login: no window until the person asks for one.
     hidden: bool,
+    /// The person closed the main window to the tray: entries in the
+    /// background (retries, reconnects) leave it closed.
+    put_away: bool,
     /// Told when the main window has finished loading `about:blank`.
     blank: Option<mpsc::Sender<()>>,
 }
@@ -242,6 +245,7 @@ impl Shell {
                 notifications: HashMap::new(),
                 next_notification: 1,
                 hidden,
+                put_away: false,
                 blank: None,
             }),
         }
@@ -324,7 +328,21 @@ impl Shell {
 
     /// The person asked for a window: from here on windows show.
     fn unhide(&self) {
-        self.with(|s| s.hidden = false)
+        self.with(|s| {
+            s.hidden = false;
+            s.put_away = false;
+        })
+    }
+
+    /// The person closed the main window, and the app stays in the tray.
+    pub fn put_away(&self) {
+        self.with(|s| s.put_away = true)
+    }
+
+    /// Whether an entry that ends may bring the main window up: not at login
+    /// start, not once the person closed it.
+    fn may_surface(&self) -> bool {
+        self.with(|s| !s.hidden && !s.put_away)
     }
 }
 
@@ -546,6 +564,23 @@ fn show(window: &WebviewWindow) {
     let _ = window.unminimize();
     let _ = window.show();
     let _ = window.set_focus();
+}
+
+/// After an entry, in or turned away: the main window comes up when it is
+/// not up yet — the first start, sign-in — but an entry that ends while the
+/// window is on screen, minimised or closed to the tray leaves it there. The
+/// offline page retries every half minute and the Code page reconnects as
+/// often; neither may pull the window over another app or out of the tray.
+fn surface(app: &AppHandle, window: &WebviewWindow) {
+    hide(app, SIGNIN);
+    if !shell(app).may_surface() || !needs_showing(window) {
+        return;
+    }
+    show(window);
+}
+
+fn needs_showing(window: &WebviewWindow) -> bool {
+    !window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false)
 }
 
 fn hide(app: &AppHandle, label: &str) {
@@ -1068,10 +1103,7 @@ fn arrive(app: &AppHandle, session: Session) {
         .map(|path| hub.join(&path))
         .unwrap_or_else(|| hub.app_url());
     load_in_main(app, &window, target);
-    hide(app, SIGNIN);
-    if s.reveal() {
-        show(&window);
-    }
+    surface(app, &window);
     if let Err(e) = ensure_quick(app, &hub) {
         eprintln!("qmo: quick entry: {e}");
     }
@@ -1102,8 +1134,8 @@ fn turned_away(app: &AppHandle, failure: Failure) {
                 st.problem = None;
             });
             navigate_main(app, hub.login_url());
-            if s.reveal() {
-                show_app(app);
+            if let Ok(window) = ensure_main(app) {
+                surface(app, &window);
             }
             return;
         }
@@ -1120,8 +1152,8 @@ fn turned_away(app: &AppHandle, failure: Failure) {
     if !main_shows_offline_code(app) {
         show_local_in_main(app, "offline.html");
     }
-    if s.reveal() {
-        show_app(app);
+    if let Ok(window) = ensure_main(app) {
+        surface(app, &window);
     }
 }
 
@@ -1630,6 +1662,40 @@ mod tests {
         let lib = include_str!("lib.rs");
         assert!(lib.contains(".plugin(code::Quiet(tauri_plugin_dialog::init()))"));
         assert_eq!(lib.matches("tauri_plugin_dialog::init()").count(), 1);
+    }
+
+    #[test]
+    fn an_entry_brings_the_window_up_only_until_the_person_puts_it_away() {
+        let dir = std::env::temp_dir().join(format!("qmo-surface-{}", std::process::id()));
+        let shell = Shell::new(Lang::En, "0".into(), dir.join("settings.json"), false);
+        assert!(shell.may_surface());
+        shell.put_away();
+        assert!(!shell.may_surface());
+        // The tray, the Dock, a notification: the person asked again.
+        shell.unhide();
+        assert!(shell.may_surface());
+        // Started at login: nothing comes up by itself.
+        let login = Shell::new(Lang::En, "0".into(), dir.join("settings.json"), true);
+        assert!(!login.may_surface());
+        login.unhide();
+        assert!(login.may_surface());
+        // Every entry's end goes through `surface`, which leaves a window
+        // on screen or minimised alone; closing main to the tray puts it away.
+        let source = include_str!("shell.rs");
+        let body = |name: &str| {
+            let start = source.find(&format!("fn {name}(")).unwrap();
+            let rest = &source[start..];
+            rest[..rest.find("\n}\n").unwrap()].to_string()
+        };
+        assert!(!body("arrive").contains("show(&window)"));
+        assert!(!body("turned_away").contains("show_app("));
+        assert_eq!(
+            body("turned_away").matches("surface(app, &window)").count(),
+            2
+        );
+        assert!(body("arrive").contains("surface(app, &window)"));
+        assert!(body("needs_showing").contains("is_minimized"));
+        assert!(include_str!("lib.rs").contains("app.state::<Shell>().put_away();"));
     }
 
     #[test]
