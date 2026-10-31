@@ -43,6 +43,9 @@ const SHOTS = process.env['QIANMO_SCREENSHOT_DIR'] ?? ''
 
 /** A chat port whose one conversation has turns either side of the switch. */
 class TurnsChat extends CountingChat {
+  /** Turns after the fourth, each a minute apart: the transcript growing. */
+  extra = 0
+
   override transcript(
     sessionId: string,
   ): Promise<ConsoleResult<ChatTranscript>> {
@@ -59,12 +62,15 @@ class TurnsChat extends CountingChat {
     return Promise.resolve({
       ok: true,
       value: {
-        session: { ...session, turnCount: 4 },
+        session: { ...session, turnCount: 4 + this.extra },
         turns: [
           turn(1, NOW - 7_200_000, 'operator'),
           turn(2, NOW - 7_100_000, 'agent'),
           turn(3, NOW - 1_800_000, 'operator'),
           turn(4, NOW - 1_700_000, 'agent'),
+          ...Array.from({ length: this.extra }, (_, i) =>
+            turn(5 + i, NOW - 1_600_000 + i * 60_000, 'agent'),
+          ),
         ],
       },
     })
@@ -660,16 +666,36 @@ describe.skipIf(SKIP !== null)('模型服务 in a browser', () => {
           `document.getElementById('prov-chat-divider').textContent`,
         ),
       ).toBe('已切换到 DeepSeek · deepseek-v4-pro')
-      // A stream event replaces the view; the cached model label and divider return.
+      // A stream event that changed nothing leaves the thread as it is, the
+      // model label and the divider with it.
       await tab.evaluate(
-        `window.__oldThread = document.getElementById('fx-thread')`,
+        `window.__oldThread = document.getElementById('fx-thread'); window.__views = 0;
+         const f = window.fetch; window.fetch = function (url) {
+           if (String(url).includes('/fragments/chat/front/view/')) window.__views += 1;
+           return f.apply(this, arguments);
+         };`,
       )
       served.chat.emit(id)
-      await tab.waitFor(`!document.contains(window.__oldThread)`)
+      await tab.waitFor(`window.__views === 1`)
+      await new Promise(resolve => setTimeout(resolve, 300))
+      const once = `document.getElementById('fx-thread') === window.__oldThread &&
+         document.querySelectorAll('#prov-chat-label').length === 1 &&
+         document.querySelectorAll('#prov-chat-divider').length === 1`
+      expect(await tab.evaluate<boolean>(once)).toBe(true)
+      // One that adds a turn brings the thread up to date in place; the
+      // label and the divider are put back once each, where they were.
+      served.chat.extra = 1
+      served.chat.emit(id)
       await tab.waitFor(
-        `document.querySelectorAll('#prov-chat-label').length === 1 &&
-         document.querySelectorAll('#prov-chat-divider').length === 1`,
+        `document.querySelectorAll('#fx-thread .fx-msg').length === 5`,
       )
+      await tab.waitFor(once)
+      const again = await tab.evaluate<string[]>(
+        `Array.prototype.map.call(document.querySelectorAll('.fx-msgs > :not(.fx-sep)'), function (el) {
+          return el.id === 'prov-chat-divider' ? 'divider' : el.className;
+        })`,
+      )
+      expect(again.indexOf('divider')).toBe(2)
     } finally {
       await tab.close()
       served.stop()

@@ -39,6 +39,9 @@ function panelScript(): string {
   var timer = null;
   var loading = false;
   var unfolded = {};
+  // The answer last swapped in and the node it became: the same again is
+  // only counted, not parsed and swapped.
+  var shown = null;
   // The panel is open because a work session is on screen, not by choice.
   var auto = false;
 
@@ -108,6 +111,8 @@ function panelScript(): string {
     loading = true;
     remember();
     return qc.loadHtml(PANEL_URL).then(function (html) {
+      var body = byId('fx-panel-body');
+      if (shown && shown.html === html && shown.el === body) return badge(body);
       var tpl = document.createElement('template');
       tpl.innerHTML = html;
       var next = tpl.content.querySelector('#fx-panel-body');
@@ -121,6 +126,7 @@ function panelScript(): string {
       var focused = document.activeElement && current.contains(document.activeElement)
         ? document.activeElement.getAttribute('data-task-stop') : null;
       current.replaceWith(next);
+      shown = { html: html, el: next };
       if (focused) {
         var again = next.querySelector('[data-task-stop="' + focused + '"]');
         if (again) again.focus();

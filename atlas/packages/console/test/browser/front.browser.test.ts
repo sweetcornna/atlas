@@ -376,6 +376,207 @@ describe.skipIf(SKIP !== null)(
       }
     }, 30_000)
 
+    test('a burst of stream events reads the conversation once, and an answer that changed nothing is not swapped in', async () => {
+      const h = accountsHarness()
+      // The transcript is the lines sent, so the thread grows with them.
+      const read = h.chat.transcript.bind(h.chat)
+      h.chat.transcript = async (sessionId: string) => {
+        const got = await read(sessionId)
+        if (!got.ok) return got
+        const turns = h.chat.sent
+          .filter(input => input.sessionId === sessionId)
+          .map((input, i) => ({
+            id: `line-${i}`,
+            sessionId,
+            author: 'operator' as const,
+            at: NOW - 60_000 + i * 1_000,
+            text: input.text,
+            state: 'read' as const,
+          }))
+        return { ok: true, value: { session: got.value.session, turns } }
+      }
+      const member = await person(h.handle, 'member')
+      const seen: string[] = []
+      const server = Bun.serve({
+        port: 0,
+        hostname: '127.0.0.1',
+        fetch(request) {
+          seen.push(new URL(request.url).pathname)
+          return h.handle(request)
+        },
+      })
+      const base = `http://127.0.0.1:${server.port}`
+      const tab = await browser.tab()
+      const views = () =>
+        seen.filter(path => path === '/fragments/chat/front/view/session-1')
+          .length
+      try {
+        await tab.send('Network.setCookie', {
+          name: 'qianmo_session',
+          value: member.sid,
+          url: base,
+          httpOnly: true,
+          sameSite: 'Strict',
+        })
+        await observeChatStream(tab)
+        await tab.goto(`${base}/`)
+        await tab.waitFor(`window.__chatStreamOpen === true`)
+        await tab.evaluate(`(() => {
+        document.getElementById('fx-text').value = '检查节点运行状态';
+        document.getElementById('fx-composer').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      })()`)
+        await tab.waitFor(
+          `document.getElementById('fx-thread').getAttribute('data-session') === 'session-1' && document.getElementById('fx-text').value === ''`,
+        )
+        // Whatever the send set going has settled.
+        await new Promise(resolve => setTimeout(resolve, 800))
+        await tab.evaluate(
+          `window.__thread = document.getElementById('fx-thread'); window.__side = document.getElementById('fx-stack')`,
+        )
+        const before = views()
+        for (let i = 0; i < 5; i++) h.chat.emit('session-1')
+        await new Promise(resolve => setTimeout(resolve, 900))
+        expect(views() - before).toBe(1)
+        expect(
+          await tab.evaluate<unknown>(`({
+            thread: document.getElementById('fx-thread') === window.__thread,
+            side: document.getElementById('fx-stack') === window.__side,
+          })`),
+        ).toEqual({ thread: true, side: true })
+        // A second line: the thread is brought up to date in place, the
+        // entries that were there left as they were.
+        await tab.evaluate(
+          `window.__first = document.querySelector('#fx-thread .fx-msgs > .fx-sep')`,
+        )
+        await tab.evaluate(`(() => {
+        document.getElementById('fx-text').value = '再看一下磁盘';
+        document.getElementById('fx-composer').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      })()`)
+        await tab.waitFor(
+          `document.querySelectorAll('#fx-thread .fx-msgs > .fx-msg-user').length === 2 && !document.querySelector('#fx-thread .fx-msg-user.is-sending')`,
+        )
+        expect(
+          await tab.evaluate<unknown>(`({
+            thread: document.getElementById('fx-thread') === window.__thread,
+            first: !!window.__first && document.querySelector('#fx-thread .fx-msgs > .fx-sep') === window.__first,
+            texts: [...document.querySelectorAll('#fx-thread .fx-msg-user .fx-bubble')].map(n => n.textContent),
+          })`),
+        ).toEqual({
+          thread: true,
+          first: true,
+          texts: ['检查节点运行状态', '再看一下磁盘'],
+        })
+      } finally {
+        await tab.close()
+        server.stop(true)
+      }
+    }, 30_000)
+
+    test('a stream the hub refused is opened again, and the polling stops once it is', async () => {
+      const h = accountsHarness()
+      const member = await person(h.handle, 'member')
+      let streams = 0
+      const views: number[] = []
+      const server = Bun.serve({
+        port: 0,
+        hostname: '127.0.0.1',
+        idleTimeout: 0,
+        fetch(request) {
+          const path = new URL(request.url).pathname
+          if (path === '/v0/chat/stream') {
+            streams += 1
+            // A hub restarting behind a proxy: the first answer is the proxy's.
+            if (streams === 1)
+              return new Response('bad gateway', { status: 502 })
+          }
+          if (path.startsWith('/fragments/chat/front/view'))
+            views.push(Date.now())
+          return h.handle(request)
+        },
+      })
+      const base = `http://127.0.0.1:${server.port}`
+      const tab = await browser.tab()
+      try {
+        await tab.send('Network.setCookie', {
+          name: 'qianmo_session',
+          value: member.sid,
+          url: base,
+          httpOnly: true,
+          sameSite: 'Strict',
+        })
+        await observeChatStream(tab)
+        await tab.goto(`${base}/`)
+        // Refused: polling meanwhile, and after five seconds a new stream.
+        await tab.waitFor(
+          `document.getElementById('fx-live').textContent !== ''`,
+        )
+        await tab.waitFor(`window.__chatStreamOpen === true`, 9_000)
+        expect(streams).toBe(2)
+        await tab.waitFor(
+          `document.getElementById('fx-live').textContent === ''`,
+        )
+        const at = Date.now()
+        await new Promise(resolve => setTimeout(resolve, 3_000))
+        // No poll after the stream opened (one catch-up read at most).
+        expect(views.filter(t => t > at).length).toBe(0)
+      } finally {
+        await tab.close()
+        server.stop(true)
+      }
+    }, 30_000)
+
+    test('the box grows with its lines, shrinks back when they go, stops at 240 px and is one line empty', async () => {
+      const h = accountsHarness()
+      const member = await person(h.handle, 'member')
+      const server = Bun.serve({
+        port: 0,
+        hostname: '127.0.0.1',
+        fetch: request => h.handle(request),
+      })
+      const base = `http://127.0.0.1:${server.port}`
+      const tab = await browser.tab()
+      try {
+        await tab.send('Network.setCookie', {
+          name: 'qianmo_session',
+          value: member.sid,
+          url: base,
+          httpOnly: true,
+          sameSite: 'Strict',
+        })
+        await tab.goto(`${base}/`)
+        await tab.waitFor(`!!document.getElementById('fx-text')`)
+        const at = (value: string) =>
+          tab.evaluate<number>(`(() => {
+            const b = document.getElementById('fx-text');
+            b.value = ${JSON.stringify(value)};
+            b.dispatchEvent(new Event('input', { bubbles: true }));
+            return Math.round(b.getBoundingClientRect().height);
+          })()`)
+        const one = await at('一')
+        let text = '一'
+        const heights: number[] = []
+        for (let i = 2; i <= 4; i++) {
+          text += `\n第 ${i} 行`
+          heights.push(await at(text))
+        }
+        expect(heights[0]).toBeGreaterThan(one)
+        expect(heights[1]).toBeGreaterThan(heights[0]!)
+        expect(heights[2]).toBeGreaterThan(heights[1]!)
+        // Deleted back to one line: one line high again.
+        expect(await at('一')).toBe(one)
+        expect(await at('一\n'.repeat(40))).toBeLessThanOrEqual(240 + 2)
+        expect(await at('')).toBeLessThanOrEqual(one)
+        expect(
+          await tab.evaluate<string>(
+            `document.getElementById('fx-text').style.height`,
+          ),
+        ).toBe('')
+      } finally {
+        await tab.close()
+        server.stop(true)
+      }
+    }, 30_000)
+
     test('a welcome starts a conversation, filters survive refresh and preferences never persist credentials', async () => {
       const h = accountsHarness()
       const member = await person(h.handle, 'member')
