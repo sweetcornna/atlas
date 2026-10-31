@@ -62,18 +62,30 @@ function loadMadge(): MadgeFn {
   const ts5 = createRequire(madgeReq.resolve('dependency-tree')).resolve(
     'typescript',
   )
+  // Follow the chain madge itself loads through: the detective is precinct's
+  // dependency and is not always hoisted (Bun 1.4.4 nests it under precinct).
+  const precinctReq = createRequire(
+    createRequire(madgeReq.resolve('dependency-tree')).resolve('precinct'),
+  )
   const estreeReq = createRequire(
-    createRequire(madgeReq.resolve('detective-typescript')).resolve(
+    createRequire(precinctReq.resolve('detective-typescript')).resolve(
       '@typescript-eslint/typescript-estree',
     ),
   )
-  const key = estreeReq.resolve('typescript')
-  req.cache[key] = {
-    id: key,
-    filename: key,
-    loaded: true,
-    exports: req(ts5),
-  } as unknown as NodeJS.Module
+  // The parser and its ts-api-utils may resolve different copies (ts-api-utils
+  // is hoisted next to the root TypeScript 7); both must see TypeScript 5.
+  const utilsReq = createRequire(estreeReq.resolve('ts-api-utils'))
+  const exports = req(ts5)
+  for (const key of new Set([
+    estreeReq.resolve('typescript'),
+    utilsReq.resolve('typescript'),
+  ]))
+    req.cache[key] = {
+      id: key,
+      filename: key,
+      loaded: true,
+      exports,
+    } as unknown as NodeJS.Module
   return req('madge')
 }
 

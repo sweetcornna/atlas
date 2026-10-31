@@ -28,6 +28,8 @@ jobs:
           bun-version-file: .tool-versions
       - name: Discover latest stable release and prepare isolated candidate
         id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: bun atlas/scripts/sync-omp.ts prepare "$RUNNER_TEMP/omp-sync"
       - name: Install native build tools
         if: steps.prepare.outputs.status == 'prepared'
