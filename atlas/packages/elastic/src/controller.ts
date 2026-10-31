@@ -31,6 +31,25 @@ export const approvalPayload = (operation: ElasticOperation) =>
   ])
 
 /** Transactions reserve capacity before the external side effect; uncertainty never frees it. */
+/**
+ * Two CLI processes may open a fresh state file at once. SQLite answers the
+ * second one's switch to WAL with SQLITE_BUSY without consulting the busy
+ * timeout, so retry it for up to the same five seconds.
+ */
+function walMode(db: Database): void {
+  const deadline = Date.now() + 5_000
+  for (;;) {
+    try {
+      db.exec('PRAGMA journal_mode=WAL')
+      return
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'SQLITE_BUSY') throw error
+      if (Date.now() >= deadline) throw error
+      Bun.sleepSync(10)
+    }
+  }
+}
+
 export class ElasticController {
   readonly #db: Database
   readonly #catalog: ResourceCatalog
@@ -58,8 +77,10 @@ export class ElasticController {
       mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
     this.#db = new Database(path, { create: true, strict: true })
     if (path !== ':memory:') chmodSync(path, 0o600)
+    this.#db.exec('PRAGMA busy_timeout=5000')
+    walMode(this.#db)
     this.#db.exec(
-      'PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS elastic_ops (id TEXT PRIMARY KEY, tenant TEXT NOT NULL, data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS elastic_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL, at INTEGER NOT NULL, kind TEXT NOT NULL, detail TEXT NOT NULL);',
+      'PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS elastic_ops (id TEXT PRIMARY KEY, tenant TEXT NOT NULL, data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS elastic_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL, at INTEGER NOT NULL, kind TEXT NOT NULL, detail TEXT NOT NULL);',
     )
   }
   #all(): ElasticOperation[] {
