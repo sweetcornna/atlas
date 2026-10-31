@@ -595,9 +595,7 @@ function codeScript(): string {
     for (var g = 0; g < groups.length; g++) steps(groups[g], g === groups.length - 1 && group === groups[g] && running());
     if (v.live) {
       if (!v.live.el) v.live.el = R.agent({ text: '', at: v.live.at }, true);
-      var text = v.live.el.querySelector('.fx-text');
-      clear(text);
-      R.richText(text, v.live.text);
+      R.grow(v.live.el.querySelector('.fx-text'), v.live.text);
       want.push(v.live.el);
     }
     for (var l = 0; l < v.lines.length; l++) {

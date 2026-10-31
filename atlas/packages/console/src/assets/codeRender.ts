@@ -148,6 +148,38 @@ function renderScript(): string {
     return parent;
   }
 
+  // The answer still arriving, redrawn as it grows (at most once a frame).
+  // What ends at a blank line outside a fence is drawn once and kept; only
+  // the rest is drawn again. A blank line closes a paragraph and a list, so
+  // the pieces come out as richText would draw the whole.
+  function grow(parent, text) {
+    var st = parent.qmoGrow;
+    if (!st || text.length < st.text.length || text.slice(0, st.text.length) !== st.text) {
+      while (parent.firstChild) parent.removeChild(parent.firstChild);
+      st = parent.qmoGrow = { text: '', scan: 0, fence: false, cut: 0, kept: 0, tail: [] };
+    }
+    st.text = text;
+    var at = st.scan;
+    var end;
+    while ((end = text.indexOf('\\n', at)) !== -1) {
+      var line = text.slice(at, end);
+      if (isFence(line)) st.fence = !st.fence;
+      else if (!st.fence && line.trim() === '') st.cut = end + 1;
+      at = end + 1;
+    }
+    st.scan = at;
+    for (var i = 0; i < st.tail.length; i++) parent.removeChild(st.tail[i]);
+    var done = text.slice(st.kept, st.cut);
+    if (done.trim()) richText(parent, done);
+    st.kept = st.cut;
+    var box = doc.createDocumentFragment();
+    var rest = text.slice(st.cut);
+    if (rest.trim() || !parent.firstChild) richText(box, rest);
+    st.tail = Array.prototype.slice.call(box.childNodes);
+    parent.appendChild(box);
+    return parent;
+  }
+
   // ---- pieces ----
 
   function lang() { return doc.documentElement.lang || 'zh-CN'; }
@@ -303,11 +335,16 @@ function renderScript(): string {
     box.appendChild(head);
     var list = el('ol', 'fx-step-list');
     box.appendChild(list);
+    var drawn = '';
     return {
       el: box,
       list: list,
-      // count, the last step's words, whether the turn still runs, and the worst severity.
+      // count, the last step's words, whether the turn still runs, and the worst severity;
+      // written only when one of them changed (this runs on every frame of an answer).
       label: function (count, words, running, worst) {
+        var sig = count + '|' + running + '|' + worst + '|' + words;
+        if (sig === drawn) return;
+        drawn = sig;
         label.textContent = w(running ? 'doing' : 'done').replace('{n}', String(count)).replace('{s}', count === 1 ? '' : 's');
         last.textContent = words;
         box.className = 'fx-steps fx-steps-' + worst + (running ? ' is-running' : '');
@@ -389,6 +426,7 @@ function renderScript(): string {
     el: el,
     icon: icon,
     richText: richText,
+    grow: grow,
     diff: diff,
     stat: stat,
     clock: clock,

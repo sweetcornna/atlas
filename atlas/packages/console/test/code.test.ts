@@ -55,7 +55,7 @@ function otherDirectives(policy: string): string {
 
 describe("Code's page scripts", () => {
   test('stay inside their budgets, parse, and ship without line comments', () => {
-    expect(CODE_RENDER_JS.length).toBeLessThan(14_000)
+    expect(CODE_RENDER_JS.length).toBeLessThan(15_000)
     expect(CODE_JS.length).toBeLessThan(37_000)
     expect(CODE_MANAGE_JS.length).toBeLessThan(8_000)
     expect(CODE_HUB_JS.length).toBeLessThan(7_000)

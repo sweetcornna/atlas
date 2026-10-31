@@ -551,9 +551,7 @@ function paint(bottom) {
   }
   if (v.live) {
     if (!v.live.el) v.live.el = R.agent({ text: '', at: v.live.at }, true)
-    const text = v.live.el.querySelector('.fx-text')
-    clear(text)
-    R.richText(text, v.live.text)
+    R.grow(v.live.el.querySelector('.fx-text'), v.live.text)
     want.push(v.live.el)
   }
   for (const line of v.lines) {
