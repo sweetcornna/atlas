@@ -106,6 +106,25 @@ describe.skipIf(SKIP !== null)('a row’s 更多 menu in a browser', () => {
     )
     expect(menu[0]).toBe(button[0])
     expect(menu[1]).toBeGreaterThanOrEqual(button[2])
+    // Its row keeps the actions shown while it is open, by a class on the
+    // cell (a :has() on :popover-open would restyle the page at every
+    // insertion); closed, the class goes.
+    await tab.waitFor(
+      `${BUTTON}.closest('td.acts').classList.contains('is-menu-open')`,
+    )
+    expect(
+      await tab.evaluate<string>(
+        `getComputedStyle(${BUTTON}.closest('td.acts > *')).opacity`,
+      ),
+    ).toBe('1')
+    await tab.evaluate(`${MENU}.hidePopover()`)
+    await tab.waitFor(
+      `!${BUTTON}.closest('td.acts').classList.contains('is-menu-open')`,
+    )
+    await tab.evaluate(`${BUTTON}.click()`)
+    await tab.waitFor(
+      `${MENU}.matches(':popover-open') && ${BUTTON}.closest('td.acts').classList.contains('is-menu-open')`,
+    )
   })
 
   test('a refresh of the region waits while the menu is open', async () => {
@@ -127,9 +146,9 @@ describe.skipIf(SKIP !== null)('a row’s 更多 menu in a browser', () => {
 
   test('a refresh already on its way when the menu opens waits too', async () => {
     await tab.evaluate(`${MENU}.hidePopover()`)
-    const before = await tab.evaluate<string>(
-      `document.getElementById('more-probe').innerHTML`,
-    )
+    // The open menu marks its cell; the region is the same markup otherwise.
+    const region = `document.getElementById('more-probe').innerHTML.replace(' is-menu-open', '')`
+    const before = await tab.evaluate<string>(region)
     site.delay.ms = 400
     try {
       await tab.evaluate(
@@ -141,11 +160,7 @@ describe.skipIf(SKIP !== null)('a row’s 更多 menu in a browser', () => {
     } finally {
       site.delay.ms = 0
     }
-    expect(
-      await tab.evaluate<string>(
-        `document.getElementById('more-probe').innerHTML`,
-      ),
-    ).toBe(before)
+    expect(await tab.evaluate<string>(region)).toBe(before)
     expect(
       await tab.evaluate<boolean>(`${MENU}.matches(':popover-open')`),
     ).toBe(true)

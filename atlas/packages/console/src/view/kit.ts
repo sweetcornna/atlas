@@ -391,6 +391,15 @@ export const MORE_MENU_JS = `
     menu.style.right = Math.max(8, window.innerWidth - at.right) + 'px';
     menu.style.top = (at.bottom + high > window.innerHeight ? Math.max(8, at.top - high) : at.bottom + 4) + 'px';
   }, true);
+  // The row keeps its actions shown while its menu is open (css.ts), by a
+  // class: a :has() on :popover-open restyles the whole page at every node
+  // put into it.
+  document.addEventListener('toggle', function (event) {
+    var menu = event.target;
+    if (!menu.matches || !menu.matches('.row-more-menu')) return;
+    var cell = menu.closest('td.acts');
+    if (cell) cell.classList.toggle('is-menu-open', event.newState === 'open');
+  }, true);
   document.addEventListener('click', function (event) {
     var item = event.target && event.target.closest ? event.target.closest('.row-more-menu [data-action]') : null;
     if (!item) return;

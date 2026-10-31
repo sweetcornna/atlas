@@ -1139,11 +1139,15 @@ textarea.input { border-radius: var(--radius-control); padding: 6px 10px; line-h
 .trail tbody tr:last-child td { border-bottom: 0; }
 .trail tbody tr:hover { background: var(--ui-hover); }
 /* Row actions stay out of the way until the row is pointed at or focused,
-   as Claude Desktop's lists do; a touch screen always shows them. */
+   as Claude Desktop's lists do; a touch screen always shows them. A cell
+   whose 更多 menu is open is marked by the menu's script (view/kit.ts): any
+   \`:has()\` on \`:popover-open\`, even one that names the menu, makes every
+   node put into the page restyle all of it (a streamed answer, a refreshed
+   thread). */
 @media (hover: hover) and (pointer: fine) {
   .trail tbody td.acts > * { opacity: 0; transition: opacity var(--motion-snap) var(--ease-out); }
   .trail tbody tr:hover td.acts > *, .trail tbody tr:focus-within td.acts > *,
-  .trail tbody td.acts:has(:popover-open) > * { opacity: 1; }
+  .trail tbody td.acts.is-menu-open > * { opacity: 1; }
 }
 @media (prefers-reduced-motion: reduce) { .trail tbody td.acts > * { transition: none; } }
 /* A row's 更多 menu (view/kit.ts): a popover in the top layer, placed under
