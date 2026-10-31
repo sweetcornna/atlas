@@ -821,9 +821,11 @@ test('manual pins survive default changes, clear with model auto, and refuse a r
     pools.push(retired)
     // Keep the old repro (the pin disappears from the provider directory),
     // but enforce the new contract: surface unavailability, never switch it
-    // to a different model without the user's explicit clearance.
+    // to a different model without the user's explicit clearance. omp
+    // v18.14 words it `Model "<id>" not found. Did you mean …?` and, like
+    // before, starts nothing.
     await expect(retired.channelFor(sessionId)).rejects.toThrow(
-      'Model not found',
+      /Model "[^"]*" not found/,
     )
   } finally {
     await Promise.all(pools.map(pool => pool.stop()))
