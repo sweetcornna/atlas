@@ -117,6 +117,12 @@ function frontScript(): string {
   // and swapped in again, which on a long conversation is most of the cost.
   var shownView = null;
   var shownSide = null;
+  // The page changed the thread itself (a line on its way, one that did not
+  // go): the next answer is drawn, whatever it is.
+  function touched() { shownView = null; }
+  // Days: the side list's groups and a pause's date are written by the page
+  // for the reader's today, so an answer from another day is drawn again.
+  function today() { return new Date().toDateString(); }
   var viewSeq = 0;
   var sideSeq = 0;
   // Bumped by every move to another conversation. A send pins the number it
@@ -221,11 +227,22 @@ function frontScript(): string {
       if (same) want.push(same);
       else { kid.qmoSrc = src; want.push(kid); }
     }
+    // What goes first, so a kept entry is never taken out and put back
+    // (which would restart its arrival animation and lay it out again).
+    var keeping = new Set(want);
+    for (var r = live.children.length - 1; r >= 0; r--) {
+      if (!keeping.has(live.children[r])) live.removeChild(live.children[r]);
+    }
     for (var w = 0; w < want.length; w++) {
       if (live.children[w] !== want[w]) live.insertBefore(want[w], live.children[w] || null);
     }
-    while (live.children.length > want.length) live.removeChild(live.lastElementChild);
   }
+
+  // An entry eases in once: the class goes when its animation has run.
+  document.addEventListener('animationend', function (event) {
+    var el = event.target;
+    if (el && el.classList && el.classList.contains('is-arriving')) el.classList.remove('is-arriving');
+  });
 
   // A <details data-key> folded or unfolded by hand stays that way.
   document.addEventListener('click', function (event) {
@@ -272,6 +289,8 @@ function frontScript(): string {
   // server writes a ledger line for it (P15.9), and never for a refresh.
   function refreshView(opening, toBottom) {
     if (CHATLESS || split() || qc.isExpired()) return Promise.resolve();
+    // An opening, a send or a retry reads what the stream's next read would.
+    if (viewTimer && (opening || toBottom === true)) { clearTimeout(viewTimer); viewTimer = null; }
     var seq = ++viewSeq;
     var scroller = byId('fx-scroll');
     var stick = toBottom === true || atBottom(scroller);
@@ -282,13 +301,13 @@ function frontScript(): string {
       // Only a refresh in the background: an opening, a send or a retry
       // (toBottom) redraws whatever came back.
       if (!opening && toBottom !== true && shownView && shownView.html === html &&
-          shownView.thread === byId('fx-thread')) {
+          shownView.thread === byId('fx-thread') && shownView.day === today()) {
         stopRetry();
         return true;
       }
       var was = threadState();
       adopt(html, ['fx-head', 'fx-thread', 'fx-activity'], !opening);
-      shownView = { html: html, thread: byId('fx-thread') };
+      shownView = { html: html, thread: byId('fx-thread'), day: today() };
       stopRetry();
       keepFigure(figure);
       if (!opening) easeRedraw(was);
@@ -411,7 +430,7 @@ function frontScript(): string {
     var listTop = list ? list.scrollTop : 0;
     return qc.loadHtml(ROUTES.side + (query.length ? '?' + query.join('&') : '')).then(function (html) {
       if (seq !== sideSeq || qc.isExpired()) return;
-      if (shownSide && shownSide.html === html && shownSide.stack === byId('fx-stack')) {
+      if (shownSide && shownSide.html === html && shownSide.stack === byId('fx-stack') && shownSide.day === today()) {
         markCurrent();
         return;
       }
@@ -427,7 +446,7 @@ function frontScript(): string {
       adopt(html, ids);
       // Kept only when all of it went in: a part held back for an open menu
       // comes in with the next answer, the same or not.
-      shownSide = ids.length === 5 ? { html: html, stack: byId('fx-stack') } : null;
+      shownSide = ids.length === 5 ? { html: html, stack: byId('fx-stack'), day: today() } : null;
       regroup();
       keepChoices(byId('fx-agents'));
       keepChoices(byId('fx-stack'));
@@ -452,7 +471,11 @@ function frontScript(): string {
   // one read for the lot.
   function soonView() {
     if (viewTimer || qc.isExpired()) return;
-    viewTimer = setTimeout(function () { viewTimer = null; refreshView(false); }, 150);
+    var mine = nav;
+    viewTimer = setTimeout(function () {
+      viewTimer = null;
+      if (mine === nav) refreshView(false);
+    }, 150);
   }
 
   function refreshAll() {
@@ -1204,6 +1227,7 @@ function frontScript(): string {
   function paintSending(text) {
     var thread = byId('fx-thread');
     if (!thread) return null;
+    touched();
     var list = thread.querySelector('.fx-msgs');
     if (!list) {
       var main = byId('fx-main');
@@ -1244,6 +1268,7 @@ function frontScript(): string {
   // Drawn the way the server draws a line that was not delivered
   // (is-failed, fx-fail), with 重试 beside the words.
   function unsentLine(line, text, session) {
+    touched();
     line.classList.remove('is-sending');
     line.classList.add('is-failed');
     var meta = line.querySelector('.fx-meta');
@@ -1336,8 +1361,8 @@ function frontScript(): string {
       // On a welcome the line replaced, the welcome is drawn again and the
       // text goes back into the box: there is no conversation to keep it in.
       var keepLine = !!ghost && !welcome && pin.nav === nav;
-      if (keepLine) unsentLine(ghost, text, pin.active);
-      else if (ghost) ghost.remove();
+      if (keepLine) { unsentLine(ghost, text, pin.active); keepUnsent(); }
+      else if (ghost) { ghost.remove(); touched(); }
       if (pin.nav === nav) {
         if (!keepLine && typeof given !== 'string' && !box.value) box.value = kept;
         autosize();
@@ -1377,24 +1402,26 @@ function frontScript(): string {
 
   /* ---------------- the composer ---------------- */
 
-  // The text's length when the box was last sized. Typing on can only make
-  // it taller: one look at whether it overflows. Shorter (a deletion, a value
-  // put back) is measured from scratch, which costs two more layouts a key.
-  var sizedLength = 0;
+  // The text the box was last sized for. Text that only goes on from it can
+  // only make the box taller: one look at whether it overflows. Anything
+  // else (a deletion, a paste over a selection, a value put back, a window
+  // of another width) is measured from scratch, two more layouts.
+  var sizedFor = null;
+  window.addEventListener('resize', function () { sizedFor = null; });
   function autosize() {
     var box = byId('fx-text');
     if (!box) return;
-    var length = box.value.length;
+    var value = box.value;
     // An empty box is one line: its placeholder can wrap while the layout
     // settles, and must never be what sizes it.
-    if (!length) box.style.height = '';
-    else if (length < sizedLength || !box.style.height) {
+    if (!value) box.style.height = '';
+    else if (sizedFor === null || !box.style.height || value.indexOf(sizedFor) !== 0) {
       box.style.height = 'auto';
       box.style.height = Math.min(box.scrollHeight, 240) + 'px';
     } else if (box.clientHeight < 240 && box.scrollHeight > box.clientHeight) {
       box.style.height = Math.min(box.scrollHeight, 240) + 'px';
     }
-    sizedLength = length;
+    sizedFor = value;
     var send = byId('fx-send');
     if (send) send.disabled = box.disabled || !box.value.trim();
   }

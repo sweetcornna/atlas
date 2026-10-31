@@ -683,7 +683,13 @@ describe.skipIf(SKIP !== null)('模型服务 in a browser', () => {
          document.querySelectorAll('#prov-chat-divider').length === 1`
       expect(await tab.evaluate<boolean>(once)).toBe(true)
       // One that adds a turn brings the thread up to date in place; the
-      // label and the divider are put back once each, where they were.
+      // label and the divider are put back once each, where they were, and
+      // no turn that stayed is taken out and put back (its arrival would
+      // play again).
+      await tab.evaluate(`window.__out = [];
+        new MutationObserver(list => {
+          for (const m of list) for (const n of m.removedNodes) if (n.classList && n.classList.contains('fx-msg')) window.__out.push(n.textContent);
+        }).observe(document.querySelector('#fx-thread .fx-msgs'), { childList: true });`)
       served.chat.extra = 1
       served.chat.emit(id)
       await tab.waitFor(
@@ -696,6 +702,7 @@ describe.skipIf(SKIP !== null)('模型服务 in a browser', () => {
         })`,
       )
       expect(again.indexOf('divider')).toBe(2)
+      expect(await tab.evaluate<string[]>('window.__out')).toEqual([])
     } finally {
       await tab.close()
       served.stop()

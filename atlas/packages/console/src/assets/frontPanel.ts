@@ -168,6 +168,7 @@ function panelScript(): string {
     if (!stop || stop.disabled) return;
     event.preventDefault();
     var id = stop.getAttribute('data-task-stop') || '';
+    var label = stop.getAttribute('aria-label') || '';
     stop.disabled = true;
     stop.setAttribute('aria-label', tx('stopping', '正在停止'));
     qc.sendJson('POST', '/v0/tasks/' + encodeURIComponent(id) + '/cancel').then(function () {
@@ -175,6 +176,7 @@ function panelScript(): string {
       return load();
     }, function (err) {
       stop.disabled = false;
+      stop.setAttribute('aria-label', label);
       qc.toast(qc.failLine('停止', err), qc.failTone(err));
     });
   }, true);
