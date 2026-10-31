@@ -182,6 +182,9 @@ struct State {
     entering: bool,
     /// Where to go once the current entry is done.
     pending: Option<String>,
+    /// `pending` is where a followed `qmo://` link goes: an entry from the
+    /// Code page keeps it rather than putting its own in.
+    linked: bool,
     reentries: Vec<Instant>,
     /// Origins that have the remote capability already.
     granted: HashSet<String>,
@@ -242,6 +245,7 @@ impl Shell {
                 notice: None,
                 entering: false,
                 pending: None,
+                linked: false,
                 reentries: Vec::new(),
                 granted: HashSet::new(),
                 notifications: HashMap::new(),
@@ -843,7 +847,10 @@ pub fn follow(app: &AppHandle, link: DeepLink) {
         DeepLink::New => "/app?work=new".to_string(),
         DeepLink::Session(id) => format!("/app?session={id}"),
     };
-    s.with(|st| st.pending = Some(path));
+    s.with(|st| {
+        st.pending = Some(path);
+        st.linked = true;
+    });
     show_app(app);
 }
 
@@ -1045,6 +1052,7 @@ pub fn enter(app: &AppHandle, back: Option<String>, reentry: bool) {
         }
         if back.is_some() {
             st.pending = back.clone();
+            st.linked = false;
         }
         if st.entering {
             return false;
@@ -1105,6 +1113,7 @@ fn arrive(app: &AppHandle, session: Session) {
         st.login_page = false;
         st.phase = Phase::Hub;
         st.problem = None;
+        st.linked = false;
         st.pending.take()
     });
     let target = back
@@ -1127,6 +1136,7 @@ fn turned_away(app: &AppHandle, failure: Failure) {
         s.with(|st| {
             st.phase = Phase::SignedOut;
             st.pending = None;
+            st.linked = false;
             st.problem = (failure.kind != ErrorKind::SignedOut).then(|| Problem::from(&failure));
         });
         // What the hidden main window showed (the offline page, the Code
@@ -1220,8 +1230,9 @@ pub fn reconnect(app: &AppHandle, session: Option<String>) -> Result<(), Problem
     let claim = s.with(|st| match st.phase {
         Phase::Offline if !st.entering => {
             st.entering = true;
-            // A deep link followed meanwhile keeps its place.
-            if st.pending.is_none() {
+            // A deep link followed meanwhile keeps its place; anything else
+            // (an earlier reconnect's, a /login re-entry's) is this one's now.
+            if !st.linked {
                 st.pending = Some(path.clone());
             }
             st.phase = Phase::Entering;
@@ -1264,6 +1275,13 @@ pub fn reconnect(app: &AppHandle, session: Option<String>) -> Result<(), Problem
         }
         Err(failure) => {
             let problem = Problem::from(&failure);
+            // Not where the next entry goes: the page may be on another
+            // session by then, and asks again with its own.
+            s.with(|st| {
+                if !st.linked && st.pending.as_deref() == Some(path.as_str()) {
+                    st.pending = None;
+                }
+            });
             turned_away(app, failure);
             Err(problem)
         }
@@ -1350,6 +1368,7 @@ pub fn sign_out(app: &AppHandle) -> SignOutReport {
         st.login_page = false;
         st.problem = None;
         st.pending = None;
+        st.linked = false;
         st.reentries.clear();
         st.notice = (!revoked).then(|| result.clone());
     });
@@ -1750,6 +1769,17 @@ mod tests {
         // A retry and a reconnect do not.
         assert!(!body("retry").contains("reveal_next"));
         assert!(!body("reconnect").contains("reveal_next"));
+        // A reconnect puts its own place in unless a followed link is waiting,
+        // and takes it back out when it fails; a link marks itself.
+        let reconnect = body("reconnect");
+        assert!(
+            reconnect.contains("if !st.linked {\n                st.pending = Some(path.clone());")
+        );
+        assert!(
+            reconnect.contains("if !st.linked && st.pending.as_deref() == Some(path.as_str()) {")
+        );
+        assert!(body("follow").contains("st.linked = true;"));
+        assert!(body("arrive").contains("st.linked = false;"));
     }
 
     #[test]

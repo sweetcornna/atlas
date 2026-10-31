@@ -657,7 +657,7 @@ function send(text) {
 
 function submit() {
   const text = box.value
-  if (!text.trim() || !listed || !view?.id) return
+  if (!text.trim() || !listed || !view?.id || box.readOnly) return
   send(text)
 }
 
@@ -816,6 +816,9 @@ function idle() {
 function reconnect(byHand) {
   if (reconnecting || (!byHand && !idle())) return
   reconnecting = true
+  // In, the shell takes the window to the hub's Code: nothing typed meanwhile
+  // may be left behind with this page.
+  box.readOnly = true
   const button = $('reconnect')
   button.disabled = true
   $('offline').textContent = t('code.reconnecting')
@@ -828,12 +831,14 @@ function reconnect(byHand) {
       if (problem?.kind === 'busy' || problem?.kind === 'signed_out') {
         setTimeout(() => {
           reconnecting = false
+          box.readOnly = false
           button.disabled = false
           $('offline').textContent = t('code.offline')
         }, 2000)
         return
       }
       reconnecting = false
+      box.readOnly = false
       button.disabled = false
       const kind = KNOWN.has(problem?.kind) ? problem.kind : 'other'
       $('offline').textContent =

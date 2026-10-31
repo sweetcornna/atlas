@@ -129,7 +129,7 @@ atlas/apps/qmo/src-tauri/target/release/bundle/macos/Qmo.app/Contents/MacOS/qmo-
 
 ## 中枢连不上时的 Code 页（P37.16）
 
-离线页在连不上与尝试太多两种情形下给「打开本机会话」（`local_open('code')`），主窗口换成 `ui/code.html`：按文件夹列本机会话，打开一个接着说、停止、答征询、改模式，记录由同一提交的 `CODE_RENDER_JS` 画（`code-render.js`）。它能调的只有已有会话的七条 `qmo_local_*`（`list`、`watch`、`read`、`send`、`stop`、`answer`、`set_mode`）与 `local_state`、`local_reconnect`；命令经 `ipc::session_caller` 只认主窗口里的这一页。`local_reconnect({session})` 再跑一次 `qmo session --json`：进得去就照常进门、去中枢的 `/code?session=<id>`；仍连不上就留在这一页、以原因拒绝。设计见 [`qmo-local.md`](../../../docs/dev/qmo-local.md) §4.5.7。
+离线页在连不上与尝试太多两种情形下给「打开本机会话」（`local_open('code')`），主窗口换成 `ui/code.html`：按文件夹列本机会话，打开一个接着说、停止、答征询、改模式，记录由同一提交的 `CODE_RENDER_JS` 画（`code-render.js`）。它能调的只有已有会话的七条 `qmo_local_*`（`list`、`watch`、`read`、`send`、`stop`、`answer`、`set_mode`）与 `local_state`、`local_reconnect`；命令经 `ipc::session_caller` 只认主窗口里的这一页。`local_reconnect({session})` 再跑一次 `qmo session --json`：进得去就照常进门、去中枢的 `/code?session=<id>`（离线时点过的 `qmo://` 深链优先）；仍连不上就留在这一页、以原因拒绝。只在离线时进行，另一次进门正在进行时答 `busy`。设计见 [`qmo-local.md`](../../../docs/dev/qmo-local.md) §4.5.7。
 
 ## 壳与运行器（本机会话）
 

@@ -481,6 +481,7 @@ describe.skipIf(SKIP !== null)('Code offline: the shell’s own page', () => {
       )
       await tab.evaluate(`${q('#reconnect')}.click()`)
       await tab.waitFor(`${q('#offline')}.textContent === '账号暂时不能用'`)
+      expect(await tab.evaluate<boolean>(`${q('#text')}.readOnly`)).toBe(false)
       // Words in the box: the network coming back does not take the page away.
       await tab.evaluate(
         `(() => { const b = ${q('#text')}; b.value = 'half a thought'; b.dispatchEvent(new Event('input')); })()`,
@@ -505,6 +506,8 @@ describe.skipIf(SKIP !== null)('Code offline: the shell’s own page', () => {
         disabled: true,
         line: '正在重新连接…',
       })
+      // Nothing typed meanwhile may be left behind when the window goes.
+      expect(await tab.evaluate<boolean>(`${q('#text')}.readOnly`)).toBe(true)
       await tab.evaluate(`window.dispatchEvent(new Event('online'))`)
       await new Promise(resolve => setTimeout(resolve, 100))
       expect(
