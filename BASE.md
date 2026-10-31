@@ -42,6 +42,24 @@
 
 截至 2026-10-08，在 omp 上**尚未合入任何上游同步**，当前 pin 仍为导入 pin `40e9368e`（v18.8.4）。自动化代码已在本地完成离线验证，须随本分支合入默认分支并取得仓库 Actions 建立 PR 的权限后才会定时运行；真实 GitHub 发布链尚未执行。
 
+### omp 上游同步记录
+
+本节记录合入 main、改变 pin 的同步。每次同步的现行 pin 以上方「Current reviewed-candidate base」与 `atlas/upstream/omp.json` 为准。
+
+#### 2026-10-10 · v18.8.4 → v18.8.8 · 已合入（#201，合并提交 `6fd9d2b0`）
+
+- sync-omp 首次走通候选；快照 `base-snapshot/omp-v18.8.8`（`b832507a`，无父提交，树 `1b30d3c8`）
+- 阡陌适配一处：上游把内嵌原生插件从 tar.gz 改成每个插件一个 zstd 帧，`native-baseline-embed.test.ts` 跟着改；另把两处写死 v18.8.4 快照名的门禁改为读 `omp.json`
+
+#### 2026-10-31 · v18.8.8 → v18.14.1 · 合入后生效（#298）
+
+- 目标 tag：v18.14.1（`c29f7c56f5530d805bb2887ade964aa55970d8e1`，2026-10-31T01:13Z 发布，当时上游最新稳定版）；快照 `base-snapshot/omp-v18.14.1`（`dbd9ca7f315872244d974d641264fbae32a9c741`，无父提交，树 `159794d10d1829017bf803b7757dfb3b0f514ece`，与上游逐字节一致）
+- 方法：`sync-omp.ts prepare` 在干净 clone 上三方应用快照间差异，3675 个路径。定时运行从 10-23 起每天停在冲突上，本次由实施方手工完成
+- 冲突：2 个文件，都是阡陌改过的上游测试（`packages/coding-agent/test/cli-license.test.ts`、`session-storage-fd-inheritance.test.ts`）。上游已改写这两个测试，阡陌改动的前提不再成立，在第一笔提交里取上游侧原文；`packages/ai/test/judgment.test.ts` 的阡陌改动与上游同一断言一致，无冲突地被吸收。三行随之从 `docs/dev/base-modifications.md` 删去
+- 不应用的上游差异：阡陌已删的 `.github/ISSUE_TEMPLATE/bug_report.yml`、`.github/workflows/{ci,nix,bun-cache-warm}.yml`，与阡陌整篇重写的根 `README.md`
+- 提交切分：第一笔 `chore(base): sync omp v18.8.8 to v18.14.1` 只含上游补丁；第二笔记录出处；阡陌的判断从第三笔起（工具链 Bun 1.4.3 → 1.4.4，上游要求 `bun@>=1.4.4`；`check-cycles` 适配 Bun 1.4.4 的依赖布局；sync-omp 查发行时带令牌）
+- 执行：负责人 2026-10-31 要求同步上游最新代码，实施方执行（章程 §2.4 的「上游同步」记录事件）
+
 ## 历史基座：open-claude-code（2026-08-11 至 2026-10-07）
 
 以下为切换前本文件的全部内容，正文逐字保留，只把标题层级下调一级以嵌入本节。其中「当前 pin」「本文件所在提交」等说法指 occ 时代；自 `c9a87c8c` 起 occ 基座树已不在工作树中。
