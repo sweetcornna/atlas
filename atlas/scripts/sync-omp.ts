@@ -485,10 +485,16 @@ async function main(): Promise<void> {
     )
   mkdirSync(out, { recursive: true })
   if (mode === 'prepare') {
+    // Anonymous API calls share the runner's address and its 60-an-hour
+    // limit; the scheduled run of 2026-10-30 was refused with 403.
+    const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN
     const response = await fetch(
       `https://api.github.com/repos/${UPSTREAM}/releases/latest`,
       {
-        headers: { Accept: 'application/vnd.github+json' },
+        headers: {
+          Accept: 'application/vnd.github+json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         signal: AbortSignal.timeout(30_000),
       },
     )
