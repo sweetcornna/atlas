@@ -37,6 +37,8 @@ pub fn system_lang() -> Lang {
         .unwrap_or(Lang::En)
 }
 
+// Most of these name the macOS menu bar's items (`menu::app_menu`).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub struct Text {
     pub app: &'static str,
     pub about: &'static str,
