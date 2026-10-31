@@ -515,6 +515,40 @@ describe.skipIf(SKIP !== null)('Code offline: the shell’s own page', () => {
     }
   }, 30_000)
 
+  test('a line that did not go keeps the page from leaving by itself; another entry under way is not 尝试太多', async () => {
+    const { tab } = await open(browser, served.base, { sendRefusals: 1 })
+    try {
+      const [id] = await seed(tab, served.base, ['unsent'])
+      await tab.goto(`${served.base}/code.html?session=${id}`)
+      await tab.waitFor(`${q('#title')}.textContent === 'unsent'`)
+      await type(tab, '这一句没发出去')
+      await tab.waitFor(`!!${q('#msgs .fx-msg-user.is-failed')}`)
+      // The network back: the 未送达 line lives in this page only, so no
+      // reconnect by itself.
+      await tab.evaluate(`window.dispatchEvent(new Event('online'))`)
+      await new Promise(resolve => setTimeout(resolve, 150))
+      expect(
+        await tab.evaluate<number>(`${calls('local_reconnect')}.length`),
+      ).toBe(0)
+      // By hand it goes; the shell says another entry is under way.
+      await tab.evaluate(
+        `window.__local.problem = { kind: 'busy', message: 'an entry is under way' }`,
+      )
+      await tab.evaluate(`${q('#reconnect')}.click()`)
+      await tab.waitFor(`${calls('local_reconnect')}.length === 1`)
+      await new Promise(resolve => setTimeout(resolve, 100))
+      expect(await tab.evaluate<string>(`${q('#offline')}.textContent`)).toBe(
+        '正在重新连接…',
+      )
+      await tab.waitFor(`${q('#reconnect')}.disabled === false`, 4_000)
+      expect(await tab.evaluate<string>(`${q('#offline')}.textContent`)).toBe(
+        '连不上中枢 · 这里只有这台电脑上的会话',
+      )
+    } finally {
+      await tab.close()
+    }
+  }, 30_000)
+
   test('a build without code-render.js says so and asks nothing of the runner', async () => {
     const bare = serve(false)
     const { tab } = await open(browser, bare.base)

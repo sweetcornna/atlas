@@ -190,9 +190,11 @@ struct State {
     next_notification: i32,
     /// Started at login: no window until the person asks for one.
     hidden: bool,
-    /// The person closed the main window to the tray: entries in the
-    /// background (retries, reconnects) leave it closed.
-    put_away: bool,
+    /// The next entry that ends may bring the main window up: the one at
+    /// start and the one after sign-in. A retry or a reconnect in the
+    /// background never does, whatever the window is doing (closed to the
+    /// tray, the app hidden with ⌘H, another app in front).
+    reveal_next: bool,
     /// Told when the main window has finished loading `about:blank`.
     blank: Option<mpsc::Sender<()>>,
 }
@@ -245,7 +247,7 @@ impl Shell {
                 notifications: HashMap::new(),
                 next_notification: 1,
                 hidden,
-                put_away: false,
+                reveal_next: false,
                 blank: None,
             }),
         }
@@ -328,21 +330,19 @@ impl Shell {
 
     /// The person asked for a window: from here on windows show.
     fn unhide(&self) {
-        self.with(|s| {
-            s.hidden = false;
-            s.put_away = false;
-        })
+        self.with(|s| s.hidden = false)
     }
 
-    /// The person closed the main window, and the app stays in the tray.
-    pub fn put_away(&self) {
-        self.with(|s| s.put_away = true)
+    /// An entry the person is waiting to see the end of starts: at start
+    /// and on sign-in.
+    fn reveal_next(&self) {
+        self.with(|s| s.reveal_next = true)
     }
 
-    /// Whether an entry that ends may bring the main window up: not at login
-    /// start, not once the person closed it.
-    fn may_surface(&self) -> bool {
-        self.with(|s| !s.hidden && !s.put_away)
+    /// Whether the entry that just ended may bring the main window up; asked
+    /// once per entry. Never when started at login.
+    fn take_reveal(&self) -> bool {
+        self.with(|s| std::mem::replace(&mut s.reveal_next, false) && !s.hidden)
     }
 }
 
@@ -566,14 +566,15 @@ fn show(window: &WebviewWindow) {
     let _ = window.set_focus();
 }
 
-/// After an entry, in or turned away: the main window comes up when it is
-/// not up yet — the first start, sign-in — but an entry that ends while the
-/// window is on screen, minimised or closed to the tray leaves it there. The
-/// offline page retries every half minute and the Code page reconnects as
-/// often; neither may pull the window over another app or out of the tray.
+/// After an entry, in or turned away: the main window comes up for the
+/// entry at start and the one after sign-in, when it is not up yet. Any
+/// other entry leaves the window as the person has it — on screen, minimised,
+/// closed to the tray, the app hidden: the offline page retries every half
+/// minute and the Code page reconnects as often, and neither may pull the
+/// window over another app or out of the tray.
 fn surface(app: &AppHandle, window: &WebviewWindow) {
     hide(app, SIGNIN);
-    if !shell(app).may_surface() || !needs_showing(window) {
+    if !shell(app).take_reveal() || !needs_showing(window) {
         return;
     }
     show(window);
@@ -998,6 +999,7 @@ const FIRST_PAINT: Duration = Duration::from_millis(800);
 /// still busy after a moment (a hub slow to answer) gets the skeleton too.
 pub fn start(app: &AppHandle) {
     let s = shell(app);
+    s.reveal_next();
     let remembered = s.settings().hub.and_then(|h| parse_hub(&h).ok());
     if let Some(hub) = remembered {
         s.with(|st| st.hub = Some(hub));
@@ -1121,6 +1123,13 @@ fn turned_away(app: &AppHandle, failure: Failure) {
             st.pending = None;
             st.problem = (failure.kind != ErrorKind::SignedOut).then(|| Problem::from(&failure));
         });
+        // What the hidden main window showed (the offline page, the Code
+        // page) stops retrying: the way on is sign-in.
+        if let Some(window) = app.get_webview_window(MAIN) {
+            let _ = window.navigate(
+                Url::parse(&format!("{}skeleton.html", local_base())).expect("local url"),
+            );
+        }
         show_signin(app);
         return;
     }
@@ -1186,13 +1195,36 @@ pub fn open_offline_code(app: &AppHandle) {
 /// (P37.16). In, the main window goes to the hub's `/code` (on `session`,
 /// already checked); turned away for good — the pairing gone, a hub without
 /// tickets — as any entry is; still out of reach, the page stays and is
-/// told why. An entry already under way answers `throttled`. Blocking.
+/// told why. Only while offline; an entry already under way answers `busy`.
+/// Blocking.
 pub fn reconnect(app: &AppHandle, session: Option<String>) -> Result<(), Problem> {
     let s = shell(app);
     let path = match &session {
         Some(id) => format!("/code?session={id}"),
         None => "/code".to_string(),
     };
+    match s.phase() {
+        Phase::Offline => {}
+        // In already (a retry elsewhere got there): to the hub's Code.
+        Phase::Hub => {
+            if let Some(hub) = s.hub() {
+                navigate_main(app, hub.join(&path));
+            }
+            return Ok(());
+        }
+        Phase::SignedOut => {
+            return Err(Problem {
+                kind: ErrorKind::SignedOut,
+                message: "signed out".into(),
+            })
+        }
+        Phase::Starting | Phase::Entering => {
+            return Err(Problem {
+                kind: ErrorKind::Busy,
+                message: "an entry is under way".into(),
+            })
+        }
+    }
     let go = s.with(|st| {
         if st.entering {
             return false;
@@ -1204,7 +1236,7 @@ pub fn reconnect(app: &AppHandle, session: Option<String>) -> Result<(), Problem
     });
     if !go {
         return Err(Problem {
-            kind: ErrorKind::Throttled,
+            kind: ErrorKind::Busy,
             message: "an entry is under way".into(),
         });
     }
@@ -1264,6 +1296,7 @@ pub fn sign_in(app: &AppHandle, raw_hub: &str, code: &str) -> Result<(), Problem
         st.reentries.clear();
     });
     s.unhide();
+    s.reveal_next();
     if let Ok(window) = ensure_main(app) {
         let _ = window
             .navigate(Url::parse(&format!("{}skeleton.html", local_base())).expect("local url"));
@@ -1665,22 +1698,25 @@ mod tests {
     }
 
     #[test]
-    fn an_entry_brings_the_window_up_only_until_the_person_puts_it_away() {
+    fn only_the_entry_at_start_or_after_sign_in_brings_the_window_up() {
         let dir = std::env::temp_dir().join(format!("qmo-surface-{}", std::process::id()));
         let shell = Shell::new(Lang::En, "0".into(), dir.join("settings.json"), false);
-        assert!(shell.may_surface());
-        shell.put_away();
-        assert!(!shell.may_surface());
-        // The tray, the Dock, a notification: the person asked again.
+        // A retry or a reconnect in the background: never.
+        assert!(!shell.take_reveal());
+        // The entry at start: once.
+        shell.reveal_next();
+        assert!(shell.take_reveal());
+        assert!(!shell.take_reveal());
+        // Settings, About, the tray: the person asked for a window, not for
+        // the next retry to raise the main one.
         shell.unhide();
-        assert!(shell.may_surface());
+        assert!(!shell.take_reveal());
         // Started at login: nothing comes up by itself.
         let login = Shell::new(Lang::En, "0".into(), dir.join("settings.json"), true);
-        assert!(!login.may_surface());
-        login.unhide();
-        assert!(login.may_surface());
-        // Every entry's end goes through `surface`, which leaves a window
-        // on screen or minimised alone; closing main to the tray puts it away.
+        login.reveal_next();
+        assert!(!login.take_reveal());
+        // Every entry's end goes through `surface`, which also leaves a
+        // window on screen or minimised alone; start and sign-in ask for it.
         let source = include_str!("shell.rs");
         let body = |name: &str| {
             let start = source.find(&format!("fn {name}(")).unwrap();
@@ -1695,7 +1731,11 @@ mod tests {
         );
         assert!(body("arrive").contains("surface(app, &window)"));
         assert!(body("needs_showing").contains("is_minimized"));
-        assert!(include_str!("lib.rs").contains("app.state::<Shell>().put_away();"));
+        assert!(body("start").contains("s.reveal_next();"));
+        assert!(body("sign_in").contains("s.reveal_next();"));
+        // A retry and a reconnect do not.
+        assert!(!body("retry").contains("reveal_next"));
+        assert!(!body("reconnect").contains("reveal_next"));
     }
 
     #[test]

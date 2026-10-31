@@ -44,9 +44,6 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
                     if window.is_fullscreen().unwrap_or(false) {
                         let _ = window.set_fullscreen(false);
                     }
-                    if window.label() == MAIN {
-                        app.state::<Shell>().put_away();
-                    }
                     let _ = window.hide();
                 } else {
                     // Closing it quits: asked first when sessions are running.

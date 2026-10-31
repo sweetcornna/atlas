@@ -184,7 +184,7 @@ pub const OFFLINE_CODE: &str = "/code.html";
 
 /// Whether `page` is the shell's own Code page.
 pub fn is_offline_code(page: &Url) -> bool {
-    crate::hub::is_local(page) && page.path() == OFFLINE_CODE
+    crate::hub::is_local(page) && page.port().is_none() && page.path() == OFFLINE_CODE
 }
 
 /// The commands of a session that exists (`shell::OFFLINE_COMMANDS`): the
@@ -1227,6 +1227,8 @@ mod tests {
             "tauri://localhost/index.html",
             "tauri://localhost/code.htm",
             "tauri://localhost/x/code.html",
+            "http://tauri.localhost:8000/code.html",
+            "tauri://localhost:1/code.html",
             "tauri://evil/code.html",
             "http://tauri.localhost.evil.com/code.html",
             "https://evil.example.com/code.html",

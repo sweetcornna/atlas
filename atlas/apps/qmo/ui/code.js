@@ -801,9 +801,12 @@ msgs.addEventListener('keydown', event => {
 
 let reconnecting = false
 
-/** Nothing would be lost by leaving: no words in the box or a note. */
+/**
+ * Nothing would be lost by leaving: no words in the box or a note, and no
+ * line on its way or left 未送达 (those live in this page only).
+ */
 function idle() {
-  if (box.value.trim()) return false
+  if (box.value.trim() || view?.lines.length) return false
   for (const input of msgs.querySelectorAll('.fx-perm-note input')) {
     if (input.value.trim()) return false
   }
@@ -820,6 +823,16 @@ function reconnect(byHand) {
     // In: the shell is taking the window to the hub's /code.
     () => {},
     problem => {
+      // Another entry is under way, or the pairing is gone (the shell is
+      // showing sign-in): this page has nothing to add.
+      if (problem?.kind === 'busy' || problem?.kind === 'signed_out') {
+        setTimeout(() => {
+          reconnecting = false
+          button.disabled = false
+          $('offline').textContent = t('code.offline')
+        }, 2000)
+        return
+      }
       reconnecting = false
       button.disabled = false
       const kind = KNOWN.has(problem?.kind) ? problem.kind : 'other'
